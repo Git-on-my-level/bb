@@ -52,6 +52,7 @@ const builtInProviders = [
     createAdapter: (options) => createPiProviderAdapter(options),
     info: getBuiltInAgentProviderInfo("pi"),
   },
+
   ...ACP_AGENT_PROFILES.map((profile) => ({
     createAdapter: (options: ProviderAdapterFactoryOptions) =>
       createAcpProviderAdapter({ ...options, profile }),

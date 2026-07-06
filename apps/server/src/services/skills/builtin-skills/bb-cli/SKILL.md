@@ -14,11 +14,26 @@ message agents, or inspect projects, providers, and environments.
 - Prefer `--json` when command output will drive follow-up work.
 - Run `bb guide` for the system overview and `bb guide <chapter>` for full
   command reference.
+- A standalone `bb` CLI with no connection env targets the default local server
+  at `http://127.0.0.1:38886` and host daemon port `38887`. Set
+  `BB_SERVER_URL` and `BB_HOST_DAEMON_PORT` only for remote or non-default
+  targets.
 
 ## Environment Setup Script
 
 - To make a repo work with bb worktrees, run `bb guide environments`. It
   documents the repo-level `.bb-env-setup.sh` setup hook.
+
+## Remote Client
+
+- `bb-app client ssh-target set <server-origin> <ssh-target>` configures the
+  local helper to open files from a remote bb server in local editors. The SSH
+  target is the value that works after `ssh`, such as `devbox` or
+  `user@devbox`.
+- These mappings live on the client machine in `<dataDir>/client.json`;
+  the CLI resolves the server's host ID when writing the mapping, and the remote
+  server does not read the file.
+- Use `bb-app client ssh-target list --json` to inspect mappings.
 
 ## Agent Instructions
 
@@ -43,6 +58,8 @@ message agents, or inspect projects, providers, and environments.
 - Spawn creates a root thread unless you pass `--parent-thread`.
 - Spawned child threads inherit permission from explicit flags, then the
   parent thread's last execution, then project defaults.
+- When spawning a subagent, pass `--permission-mode full` unless the user or
+  task explicitly requests restricted access.
 - Use `--parent-self` inside a thread to parent the new thread to the current
   thread.
 - Use `--parent-thread <thread-id>` to choose another specific parent.
@@ -87,14 +104,15 @@ For review or fix pipelines, get the environment ID from
 `bb thread show <thread-id> --json`, then spawn the follow-up with
 `--environment <environment-id>` so it sees the same files.
 
-## Finding Threads From Workspace Paths
+## Opening Files In The Thread Panel
 
-- Use `bb thread open <path>` to find the BB thread whose workspace contains a
-  path and print its thread URL.
-- The path is resolved relative to the current working directory unless it is
-  already absolute.
-- BB chooses the non-archived thread whose workspace path is the longest prefix
-  of the resolved path.
+- Use `bb thread open <path>` inside a BB thread to open a Markdown, HTML, or
+  other workspace file for the user in the BB IDE's thread panel.
+- Outside a BB thread, use `bb thread open <thread-id> <path>`.
+- Paths can be thread-relative workspace paths, or absolute paths inside the
+  target thread workspace.
+- Absolute paths under `BB_THREAD_STORAGE` open as thread-storage files for the
+  current thread.
 
 ## Long-Running Commands
 
@@ -144,6 +162,9 @@ For review or fix pipelines, get the environment ID from
   rejected.
 - Create an agent automation with
   `bb automation create --project <id> --name "..." --cron "0 9 * * 1-5" --timezone "America/New_York" --provider <id> --model <model> --prompt "..."`.
+- Create a one-shot agent automation with
+  `bb automation create --project <id> --name "..." --in "30m" --provider <id> --model <model> --prompt "..."`,
+  or use `--at "2026-07-03T09:00:00-07:00"` for an absolute run time.
 - Create a script automation with
   `bb automation create --project <id> --name "..." --cron "..." --timezone "..." --script-file ./watch.sh`
   (or `--script "<inline>"`). A script that exits 0 with empty stdout, or whose
@@ -158,7 +179,8 @@ For review or fix pipelines, get the environment ID from
   and check the exit status of each `bb` call. Captured stdout+stderr is stored
   on failed runs (see `--output <run-id>`).
 - Cron accepts standard 5-field expressions, including step values like
-  `*/5 * * * *` (minimum granularity is 5 minutes).
+  `* * * * *`, `*/2 * * * *`, and `*/5 * * * *`. Cron granularity is one
+  minute. One-shot automations use `--at` or `--in` and fire once.
 - Pass `--project <id>` explicitly for every automation command.
 - Use `bb automation list`, `bb automation show <id>`, and
   `bb automation runs <id>` to inspect; `--output <run-id>` prints a script
@@ -209,3 +231,111 @@ properties. Set the two anchors `--canvas`/`--ink` (most of the UI derives from
 them by mixing ink into canvas), the `--primary` accent, the secondary text tiers
 (`--muted-foreground` etc.), and the semantic colors (`--destructive`,
 `--success`, …). Ship one file with a `:root, .light` block and a `.dark` block.
+
+## Plugins
+
+- A bb plugin is a TypeScript package running inside the bb server, extending
+  it with services, schedules, HTTP/RPC endpoints, settings — and `bb` CLI
+  subcommands that agents run through bash like any other command.
+- **Enable it first.** Plugins are an experiment, off by default: turn on
+  **"Plugins"** under Settings → Experiments. Until then, `bb plugin` commands
+  report that plugins are disabled.
+- Commands:
+  - `bb plugin install <src>` — local path, `git:<url>@<ref>`, or
+    `npm:<name>@<version>` (npm on PATH required for `npm:`). Installs prompt
+    for confirmation (plugins are full-trust code); pass `--yes` to skip.
+    Plugins that declare a frontend (`bb.app`) are built at install time for
+    path/git sources; npm packages must publish a prebuilt `dist/`.
+  - `bb plugin list` — status, background services, schedules, handler timings,
+    and each plugin's contributed `bb` command.
+  - `bb plugin enable|disable <id>`, `bb plugin reload [id]`,
+    `bb plugin remove <id>`.
+  - `bb plugin config <id> [set <key> <value> | unset <key>]` — declared
+    settings. Reload the plugin after configuring (`bb plugin reload <id>`).
+  - `bb plugin logs <id> [-n N] [-f]` — the plugin's `bb.log` output.
+  - `bb plugin run <id> [args...]` — explicit form of a plugin's CLI command.
+  - `bb plugin new <name> [--app]` — scaffold a plugin (`--app` adds a frontend
+    entry plus a typecheck-only `tsconfig.json`); `bb plugin build [path]` —
+    compile the plugin into `dist/`: the backend bundle (`server.js` +
+    `server.meta.json`; preferred by git/npm installs over source) and, when
+    `bb.app` is declared, `app.js` + `app.css` + `app.meta.json`. Neither
+    needs the server.
+  - `bb plugin dev [path]` — watch loop for an installed plugin (default:
+    cwd): on every change it rebuilds the frontend bundle (when `bb.app` is
+    declared) and reloads the plugin; open app pages pick the new UI up live.
+    Build/reload failures print and keep watching; Ctrl+C stops.
+  - Frontend entries default-export `definePluginApp` from
+    `@bb/plugin-sdk/app` and register UI slots (homepageSection, navPanel,
+    threadPanelAction, composerAccessory) with hooks (useRpc, useRealtime,
+    useSettings, useBbContext, useBbNavigate); components are vendored
+    shadcn source the plugin owns. Installed
+    plugins and their settings also appear under Settings → Plugins.
+- Plugins can add top-level `bb` subcommands (e.g. `bb linear issues`). Run
+  them directly — unknown `bb` commands are resolved against installed plugins
+  and proxied to the server. Core command names always win. In agent threads,
+  the injected `plugin-commands` skill lists what is available.
+- **Writing a plugin?** Use the `bb-plugin-authoring` skill — the complete
+  authoring reference for the backend `BbPluginApi` (settings, storage, sdk,
+  http/rpc/realtime, background services and schedules, CLI commands, agent
+  tools and context, host-rendered UI, lifecycle) and the frontend
+  `@bb/plugin-sdk/app` contract (slots, hooks, UI kit), with working patterns
+  and gotchas. `bb guide plugins` has the short walkthrough.
+
+## Modifying the App UI
+
+`bb ui` lets you reshape the bb frontend itself — not just colors, but layout,
+copy, components, and behavior. It works from **any chat**: `bb ui fork` to start,
+edit the source on disk, then `bb ui apply` to rebuild and live-reload every
+window.
+
+- **Enable it first.** UI forking is an experiment, off by default. Turn on
+  **"UI forking"** under Settings → Experiments. Until then, `bb ui` commands are
+  disabled and the shipped UI is always served (`bb ui status` says so).
+- **`bb ui fork` creates your editable copy** of the frontend at `<bb-data-dir>/ui`
+  (the packaged app uses `~/.bb/ui`) and switches to it. It is a self-contained
+  Vite + React + Tailwind workspace — `src/`, `index.html`, `public/`,
+  `package.json`. The first `fork` seeds it (installs + builds — slower, a minute
+  or so); after that, edits are fast.
+- **Add dependencies freely:** add a package to `package.json`, and `bb ui apply`
+  runs `pnpm install` and rebuilds.
+- **`bb ui prod` is the known-good fallback.** It switches back to the shipped UI
+  instantly; your fork stays on disk. This is the escape hatch if an edit breaks
+  the app — it works even when the UI is broken, because it runs server-side.
+- **Builds are gated.** A build that fails to compile is never served: the live
+  UI stays on the last good build and `bb ui apply` returns the build errors so
+  you can fix and retry.
+- **Type feedback.** `bb ui fork`/`apply` also run a scoped `tsc --noEmit` over
+  your source (tests excluded) and print any type errors. It is advisory — the
+  build still serves (Vite strips types) — but it catches type mistakes the build
+  won't, so fix them.
+- **Where it takes effect:** `bb ui` swaps what the **server** serves, so it
+  applies to the packaged app and any production server build. Under `pnpm dev`
+  the frontend is served by Vite, so `bb ui apply` still builds but the running
+  dev page keeps coming from Vite (use Vite's own HMR there).
+
+Workflow for a UI change:
+
+1. `bb ui fork` — create your editable copy and switch to it (first run seeds it).
+   `fork` and `status` print the **fork dir** (its absolute path) — that is where
+   you edit.
+2. Edit files under that fork dir (`<bb-data-dir>/ui`, e.g. `~/.bb/ui` in the
+   packaged app): change `src/` for the UI and `package.json` to add deps. This
+   is the real frontend source.
+3. `bb ui apply` — rebuild and live-reload every window. On a build error, read
+   the printed log, fix the source, and run it again.
+4. `bb ui prod` to switch back to the shipped UI, or `bb ui fork --reset` to throw
+   your edits away and start fresh.
+
+Commands:
+
+- `bb ui status` — which UI is active (`prod` / `fork`) and the last build state.
+- `bb ui fork [--reset]` — create your fork and switch to it (first run seeds;
+  `--reset` discards edits and re-seeds).
+- `bb ui apply` — rebuild your fork after editing and reload connected clients.
+- `bb ui prod` — switch back to the shipped UI (your fork stays on disk).
+- `bb ui update` — rebase your fork onto a newer shipped UI after a bb update. A
+  clean rebase rebuilds and serves automatically. On conflict it falls back to
+  the shipped UI and reports the files to fix; resolve them and run
+  `bb ui update --continue` (or `bb ui update --abort`).
+
+Add `--json` to any `bb ui` command for machine-readable output.

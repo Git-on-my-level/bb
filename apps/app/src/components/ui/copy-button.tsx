@@ -9,6 +9,7 @@ import {
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon.js";
+import { CONTROL_HOVER_TRANSITION } from "./motion.js";
 
 interface ClipboardCopyOptions {
   text: string;
@@ -45,14 +46,13 @@ function useClipboardCopy({
 
 interface CopyButtonProps
   extends ClipboardCopyOptions,
-    Omit<ComponentPropsWithoutRef<"button">, "type" | "onClick"> {
+    Omit<ComponentPropsWithoutRef<"button">, "type" | "onClick" | "title"> {
   iconClassName?: string;
   label?: string;
 }
 
 // forwardRef + prop spreading so it can act as a Radix `asChild` trigger (e.g.
-// wrapped in a Tooltip). `title` defaults to the label but a caller can pass
-// `title={undefined}` to suppress the native tooltip when supplying its own.
+// wrapped in a Tooltip) without also creating a native browser tooltip.
 export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
   function CopyButton(
     {
@@ -77,10 +77,9 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
         ref={ref}
         type="button"
         aria-label={label}
-        title={label}
         {...rest}
         className={cn(
-          "inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground focus-visible:opacity-100",
+          `inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground ${CONTROL_HOVER_TRANSITION} hover:text-foreground focus-visible:opacity-100`,
           className,
         )}
         onClick={() => {
@@ -125,16 +124,17 @@ export function CopyableInlineLabel({
     <button
       type="button"
       className={cn(
-        "inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md text-left text-foreground transition-colors hover:text-foreground/80",
+        `inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-md text-left text-foreground ${CONTROL_HOVER_TRANSITION} hover:text-foreground/80`,
         className,
       )}
       onClick={() => {
         void copy();
       }}
       aria-label={label}
-      title={title ?? label}
     >
-      <span className="min-w-0 truncate">{children ?? text}</span>
+      <span className="min-w-0 truncate" title={title ?? text}>
+        {children ?? text}
+      </span>
       <Icon
         name={copied ? "Check" : "Copy"}
         className={cn("size-3.5 shrink-0 text-muted-foreground", iconClassName)}

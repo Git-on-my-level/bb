@@ -8,7 +8,12 @@ import {
   getMutationErrorMeta,
   showMutationErrorToast,
 } from "./mutation-errors";
+import { invalidateActiveThreadBundleQueriesAfterBrowserResume } from "@/hooks/cache-owners/active-thread-lifecycle-cache-owner";
 import { cancelActiveQueryFetchesForBrowserSuspend } from "@/hooks/cache-owners/browser-lifecycle-cache-owner";
+import {
+  shouldRetryTransientReadQuery,
+  TRANSIENT_READ_RETRY_DELAY_MS,
+} from "@/hooks/queries/query-helpers";
 
 export interface CreateAppQueryClientOptions {
   defaultOptions?: QueryClientConfig["defaultOptions"];
@@ -20,6 +25,7 @@ export interface AppQueryClientBrowserEventCleanup {
 }
 
 let appFocusEventsInstalled = false;
+const BROWSER_RESUME_INVALIDATION_DEDUPE_MS = 1000;
 
 function installAppFocusEvents(): void {
   if (appFocusEventsInstalled) {
@@ -52,21 +58,55 @@ export function installAppQueryClientBrowserEvents(
     return { cleanup: () => {} };
   }
 
-  const handlePageHide = () => {
+  let browserWasSuspended = false;
+  let lastResumeInvalidationAt = -BROWSER_RESUME_INVALIDATION_DEDUPE_MS;
+
+  const handleBrowserSuspend = () => {
+    browserWasSuspended = true;
     cancelActiveQueryFetchesForBrowserSuspend(queryClient);
+  };
+  const handleBrowserResume = () => {
+    if (!browserWasSuspended) {
+      return;
+    }
+    browserWasSuspended = false;
+
+    const now = Date.now();
+    if (now - lastResumeInvalidationAt < BROWSER_RESUME_INVALIDATION_DEDUPE_MS) {
+      return;
+    }
+    lastResumeInvalidationAt = now;
+    invalidateActiveThreadBundleQueriesAfterBrowserResume({ queryClient });
+  };
+  const handlePageHide = () => {
+    handleBrowserSuspend();
+  };
+  const handlePageShow = () => {
+    handleBrowserResume();
+  };
+  const handleWindowFocus = () => {
+    handleBrowserResume();
   };
   const handleVisibilityChange = () => {
     if (document.visibilityState === "hidden") {
-      cancelActiveQueryFetchesForBrowserSuspend(queryClient);
+      handleBrowserSuspend();
+      return;
+    }
+    if (document.visibilityState === "visible") {
+      handleBrowserResume();
     }
   };
 
   window.addEventListener("pagehide", handlePageHide, false);
+  window.addEventListener("pageshow", handlePageShow, false);
+  window.addEventListener("focus", handleWindowFocus, false);
   document.addEventListener("visibilitychange", handleVisibilityChange, false);
 
   return {
     cleanup: () => {
       window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     },
   };
@@ -105,7 +145,8 @@ export function createAppQueryClient(
       queries: {
         staleTime: 2000,
         refetchOnWindowFocus: true,
-        retry: 0,
+        retry: shouldRetryTransientReadQuery,
+        retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
         ...defaultOptions?.queries,
       },
     },

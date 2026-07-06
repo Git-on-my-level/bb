@@ -17,6 +17,7 @@ import type {
   HostDaemonSessionCloseReason,
 } from "@bb/host-daemon-contract";
 import {
+  pluginSignalSchema,
   serverMessageSchema,
   terminalServerMessageSchema,
   threadOpenFileSignalSchema,
@@ -85,6 +86,11 @@ interface HostEventWaiter {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface DaemonRegistrationWaiter {
+  resolve: (registered: boolean) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
 interface HostOnlineRpcWaiter {
   reject: (reason?: Error) => void;
   resolve: (message: HostDaemonOnlineRpcResponseMessage) => void;
@@ -126,6 +132,10 @@ export class NotificationHub implements DbNotifier {
   private readonly daemonSessions = new Map<
     string,
     { hostId: string; socket: HubSocket }
+  >();
+  private readonly daemonRegistrationWaiters = new Map<
+    string,
+    Set<DaemonRegistrationWaiter>
   >();
   private readonly daemonSessionIdsByHost = new Map<string, string>();
   private readonly hostEventWaiters = new Map<string, Set<HostEventWaiter>>();
@@ -295,6 +305,7 @@ export class NotificationHub implements DbNotifier {
     }
     this.daemonSessions.set(sessionId, { hostId, socket });
     this.daemonSessionIdsByHost.set(hostId, sessionId);
+    this.resolveDaemonRegistrationWaiters(hostId);
   }
 
   unregisterDaemon(sessionId: string): void {
@@ -312,6 +323,38 @@ export class NotificationHub implements DbNotifier {
   hasDaemonForHost(hostId: string): boolean {
     const sessionId = this.daemonSessionIdsByHost.get(hostId);
     return sessionId !== undefined && this.daemonSessions.has(sessionId);
+  }
+
+  getDaemonSessionIdForHost(hostId: string): string | null {
+    const sessionId = this.daemonSessionIdsByHost.get(hostId);
+    if (!sessionId || !this.daemonSessions.has(sessionId)) {
+      return null;
+    }
+    return sessionId;
+  }
+
+  async waitForDaemonForHost(
+    hostId: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    if (this.hasDaemonForHost(hostId)) {
+      return true;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const waiter: DaemonRegistrationWaiter = {
+        resolve,
+        timeout: setTimeout(() => {
+          this.deleteDaemonRegistrationWaiter(hostId, waiter);
+          resolve(false);
+        }, timeoutMs),
+      };
+      const waiters =
+        this.daemonRegistrationWaiters.get(hostId) ??
+        new Set<DaemonRegistrationWaiter>();
+      waiters.add(waiter);
+      this.daemonRegistrationWaiters.set(hostId, waiters);
+    });
   }
 
   closeDaemonSession(
@@ -532,6 +575,33 @@ export class NotificationHub implements DbNotifier {
     return delivered;
   }
 
+  /**
+   * Broadcast an ephemeral plugin realtime signal (`bb.realtime.publish`) to
+   * every connected client. V1 broadcasts to all clients — per-channel
+   * subscriptions arrive with the plugin frontend runtime. Returns how many
+   * clients the signal reached.
+   */
+  notifyPluginSignal(
+    pluginId: string,
+    channel: string,
+    payload: unknown,
+  ): number {
+    const message = JSON.stringify(
+      pluginSignalSchema.parse({
+        type: "plugin-signal",
+        pluginId,
+        channel,
+        payload,
+      }),
+    );
+    let delivered = 0;
+    for (const socket of this.clientKeysBySocket.keys()) {
+      socket.send(message);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
   notifyProject(projectId: string, changes: ProjectChangeKind[]): void {
     this.notifyClients({
       type: "changed",
@@ -626,6 +696,33 @@ export class NotificationHub implements DbNotifier {
       this.deleteHostOnlineRpcWaiter(requestId, waiter);
       waiter.reject(new HostOnlineRpcUnavailableError());
     }
+  }
+
+  private deleteDaemonRegistrationWaiter(
+    hostId: string,
+    waiter: DaemonRegistrationWaiter,
+  ): void {
+    clearTimeout(waiter.timeout);
+    const waiters = this.daemonRegistrationWaiters.get(hostId);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this.daemonRegistrationWaiters.delete(hostId);
+    }
+  }
+
+  private resolveDaemonRegistrationWaiters(hostId: string): void {
+    const waiters = this.daemonRegistrationWaiters.get(hostId);
+    if (!waiters) {
+      return;
+    }
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve(true);
+    }
+    this.daemonRegistrationWaiters.delete(hostId);
   }
 
   private notifyClients(message: ChangedMessage): void {

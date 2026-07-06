@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { hc } from "hono/client";
+import { hc, type ClientRequestOptions } from "hono/client";
 import type {
   AppTheme,
   AppThemeSelection,
@@ -24,6 +24,7 @@ import {
   noRequest,
   optionalQueryRequest,
   queryRequest,
+  textResponse,
   type ApiSchemaFromRouteDescriptors,
 } from "@bb/hono-typed-routes";
 import type {
@@ -71,6 +72,21 @@ import type {
   EnvironmentPullRequestResponse,
   EnvironmentStatusQuery,
   EnvironmentStatusResponse,
+  HostDirectoryListing,
+  HostDirectoryQuery,
+  HostFileListRequest,
+  HostFileListResponse,
+  HostFileReadRequest,
+  HostFileReadResponse,
+  HostFileWriteRequest,
+  HostFileWriteResponse,
+  HostPickFolderRequest,
+  HostPickFolderResponse,
+  HostPathsExistRequest,
+  HostPathsExistResponse,
+  HostProviderCliInstallEvent,
+  HostProviderCliInstallRequest,
+  HostProviderCliStatusResponse,
   ProjectAttachmentContentQuery,
   ProjectAttachmentUploadForm,
   ProjectBranchesQuery,
@@ -122,6 +138,7 @@ import type {
   ThreadHostFileContentQuery,
   ThreadListQuery,
   ThreadListResponse,
+  ThreadConversationOutlineResponse,
   ThreadOpenRequest,
   ThreadOpenResponse,
   ThreadPendingInteractionsResponse,
@@ -170,6 +187,13 @@ import {
   environmentDiffQuerySchema,
   environmentPathsQuerySchema,
   environmentStatusQuerySchema,
+  hostDirectoryQuerySchema,
+  hostFileListRequestSchema,
+  hostFileReadRequestSchema,
+  hostFileWriteRequestSchema,
+  hostPickFolderRequestSchema,
+  hostPathsExistRequestSchema,
+  hostProviderCliInstallRequestSchema,
   projectAttachmentContentQuerySchema,
   projectBranchesQuerySchema,
   projectCommandsQuerySchema,
@@ -366,6 +390,33 @@ export const publicApiRoutes = {
     }),
   },
 
+  files: {
+    read: defineRoute({
+      path: "/files/read",
+      method: "post",
+      request: jsonRequest<EmptyInput, HostFileReadRequest>(
+        hostFileReadRequestSchema,
+      ),
+      response: jsonResponse<HostFileReadResponse>(),
+    }),
+    write: defineRoute({
+      path: "/files/write",
+      method: "post",
+      request: jsonRequest<EmptyInput, HostFileWriteRequest>(
+        hostFileWriteRequestSchema,
+      ),
+      response: jsonResponse<HostFileWriteResponse>(),
+    }),
+    list: defineRoute({
+      path: "/files/list",
+      method: "post",
+      request: jsonRequest<EmptyInput, HostFileListRequest>(
+        hostFileListRequestSchema,
+      ),
+      response: jsonResponse<HostFileListResponse>(),
+    }),
+  },
+
   hosts: {
     list: defineRoute({
       path: "/hosts",
@@ -378,6 +429,44 @@ export const publicApiRoutes = {
       method: "get",
       request: noRequest<PathId>(),
       response: jsonResponse<Host>(),
+    }),
+    directory: defineRoute({
+      path: "/hosts/:id/directory",
+      method: "get",
+      request: queryRequest<PathId, HostDirectoryQuery>(
+        hostDirectoryQuerySchema,
+      ),
+      response: jsonResponse<HostDirectoryListing>(),
+    }),
+    pathsExist: defineRoute({
+      path: "/hosts/:id/paths/exist",
+      method: "post",
+      request: jsonRequest<PathId, HostPathsExistRequest>(
+        hostPathsExistRequestSchema,
+      ),
+      response: jsonResponse<HostPathsExistResponse>(),
+    }),
+    pickFolder: defineRoute({
+      path: "/hosts/:id/pick-folder",
+      method: "post",
+      request: jsonRequest<PathId, HostPickFolderRequest>(
+        hostPickFolderRequestSchema,
+      ),
+      response: jsonResponse<HostPickFolderResponse>(),
+    }),
+    providerCliStatus: defineRoute({
+      path: "/hosts/:id/provider-clis/status",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<HostProviderCliStatusResponse>(),
+    }),
+    providerCliInstall: defineRoute({
+      path: "/hosts/:id/provider-clis/install",
+      method: "post",
+      request: jsonRequest<PathId, HostProviderCliInstallRequest>(
+        hostProviderCliInstallRequestSchema,
+      ),
+      response: textResponse<HostProviderCliInstallEvent>(),
     }),
   },
 
@@ -811,6 +900,12 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<ThreadTimelineResponse>(),
     }),
+    conversationOutline: defineRoute({
+      path: "/threads/:id/conversation-outline",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadConversationOutlineResponse>(),
+    }),
     timelineTurnSummaryDetails: defineRoute({
       path: "/threads/:id/timeline/turn-summary-details",
       method: "get",
@@ -1049,16 +1144,33 @@ export type PublicApiSchema = ApiSchemaFromRouteDescriptors<
 
 export type PublicApiRoutes = Hono<{}, PublicApiSchema, "/">;
 
+export type PublicApiFetch = (
+  ...args: Parameters<typeof fetch>
+) => ReturnType<typeof fetch>;
+
 /** Omit the options object to use global fetch; provide it to override fetch. */
 export interface PublicApiClientOptions {
-  fetch: typeof fetch;
+  fetch: PublicApiFetch;
+}
+
+function toHonoClientOptions(
+  options: PublicApiClientOptions | undefined,
+): ClientRequestOptions | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+  // Hono types custom fetch as typeof fetch, but only calls the function.
+  return { fetch: options.fetch as typeof fetch };
 }
 
 export function createPublicApiClient(
   baseUrl: string,
   options?: PublicApiClientOptions,
 ) {
-  return hc<PublicApiRoutes>(`${baseUrl}/api/v1`, options);
+  return hc<PublicApiRoutes>(
+    `${baseUrl}/api/v1`,
+    toHonoClientOptions(options),
+  );
 }
 
 export function createApiClient(

@@ -78,7 +78,9 @@ The package also exposes the `bb` CLI for an already-running bb server:
 npx --package bb-app bb --help
 ```
 
-The CLI uses the same `BB_SERVER_URL` and bb config resolution as the SDK.
+The CLI uses the same `BB_SERVER_URL` and bb config resolution as the SDK. When
+unset, it targets the default local packaged server at
+`http://127.0.0.1:38886`.
 
 ## Scripting with the SDK
 
@@ -129,6 +131,15 @@ npx bb-app config set BB_INFERENCE codex/gpt-5.4-mini
 npx bb-app config set BB_TRANSCRIPTION codex/gpt-4o-mini-transcribe
 npx bb-app config list
 npx bb-app config refresh
+```
+
+Use `bb-app client ssh-target` to configure local editor opens for remote
+bb servers under `~/.bb/client.json`. The target is the value that works after
+`ssh`, such as `devbox` or `user@devbox`:
+
+```bash
+npx bb-app client ssh-target set https://bb.example.test devbox
+npx bb-app client ssh-target list
 ```
 
 Use `bb-app env` for provider credentials under `~/.bb/env.json`:

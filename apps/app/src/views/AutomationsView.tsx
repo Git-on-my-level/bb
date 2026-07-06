@@ -21,7 +21,7 @@ import { EmptyStatePanel } from "@/components/ui/empty-state.js";
 import { Icon } from "@/components/ui/icon.js";
 import { PageShell } from "@/components/ui/page-shell.js";
 import { Pill } from "@/components/ui/pill.js";
-import { CREATE_LOOP_PROMPT } from "@/components/promptbox/PromptBoxActionsMenu";
+import { CREATE_LOOP_PROMPT } from "@/lib/loop-prompt";
 import { useDialogState } from "@/hooks/useDialogState";
 import {
   useAutomations,
@@ -30,7 +30,10 @@ import {
   useResumeAutomation,
   useRunAutomation,
 } from "@/hooks/queries/automation-queries";
-import { formatScheduleStatusLabel } from "@/lib/format-schedule";
+import {
+  formatScheduleStatusLabel,
+  isCompletedOneShotAutomation,
+} from "@/lib/format-schedule";
 import {
   getAutomationDetailRoutePath,
   getRootComposeRoutePath,
@@ -115,20 +118,28 @@ export function buildAutomationRowMenuItems(
   actions: AutomationRowActions,
 ): AutomationRowMenuItem[] {
   const { automation } = entry;
-  return [
-    automation.enabled
-      ? {
-          key: "pause",
-          label: "Pause",
-          destructive: false,
-          run: () => actions.onPause(entry),
-        }
+  const completedOneShot = isCompletedOneShotAutomation({
+    enabled: automation.enabled,
+    trigger: automation.trigger,
+    runCount: automation.runCount,
+  });
+  const stateAction: AutomationRowMenuItem | null = automation.enabled
+    ? {
+        key: "pause",
+        label: "Pause",
+        destructive: false,
+        run: () => actions.onPause(entry),
+      }
+    : completedOneShot
+      ? null
       : {
           key: "resume",
           label: "Resume",
           destructive: false,
           run: () => actions.onResume(entry),
-        },
+        };
+  return [
+    ...(stateAction ? [stateAction] : []),
     {
       key: "run",
       label: "Run now",
@@ -210,6 +221,8 @@ function AutomationRow({ entry, actions }: AutomationRowProps) {
         {formatScheduleStatusLabel({
           enabled: automation.enabled,
           nextRunAt: automation.nextRunAt,
+          trigger: automation.trigger,
+          runCount: automation.runCount,
         })}
       </span>
       <DropdownMenu>
@@ -220,7 +233,6 @@ function AutomationRow({ entry, actions }: AutomationRowProps) {
             size="icon"
             className="size-6 shrink-0 rounded-md p-0 text-muted-foreground data-[state=open]:bg-state-active data-[state=open]:text-foreground"
             aria-label={`${automation.name} actions`}
-            title={`${automation.name} actions`}
           >
             <Icon name="MoreHorizontal" className="size-4" />
           </Button>

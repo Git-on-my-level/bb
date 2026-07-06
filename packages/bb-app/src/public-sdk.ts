@@ -51,6 +51,11 @@ export interface PromptTextMention {
         threadId: string;
       }
     | {
+        kind: "project";
+        label: string;
+        projectId: string;
+      }
+    | {
         kind: "path";
         entryKind: "directory" | "file";
         label: string;
@@ -65,6 +70,12 @@ export interface PromptTextMention {
         origin: "project" | "user";
         source: "command" | "skill";
         trigger: "/";
+      }
+    | {
+        kind: "plugin";
+        itemId: string;
+        label: string;
+        pluginId: string;
       };
   start: number;
 }

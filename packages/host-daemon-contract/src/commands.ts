@@ -23,8 +23,16 @@ import {
   FILE_LIST_QUERY_MAX_LENGTH,
 } from "@bb/domain";
 import { z } from "zod";
+import {
+  pathsExistRequestSchema,
+  pathsExistResponseSchema,
+  pickFolderResponseSchema,
+  providerCliInstallEventSchema,
+  providerCliInstallRequestSchema,
+  providerCliStatusResponseSchema,
+} from "./local.js";
 
-export const HOST_DAEMON_PROTOCOL_VERSION = 44 as const;
+export const HOST_DAEMON_PROTOCOL_VERSION = 45 as const;
 
 export {
   BRANCH_LIST_LIMIT_MAX,
@@ -392,6 +400,32 @@ const hostFileMetadataCommandSchema = z
   })
   .strict();
 
+/**
+ * Write a file at an absolute host path. Mirrors `host.read_file`'s
+ * containment contract: when `rootPath` is provided, the daemon enforces that
+ * the resolved target stays under that declared absolute root (following
+ * symlinks on the nearest existing ancestor).
+ *
+ * `expectedSha256` is the optimistic-concurrency guard for read-modify-write
+ * callers (editors saving over files agents may also touch):
+ * - omitted → unconditional write
+ * - a hash  → write only when the current content hashes to it
+ * - null    → write only when the file does not exist yet (create)
+ * A failed guard is the `conflict` result, not an error, so the caller gets
+ * the current hash to re-read against.
+ */
+const hostWriteFileCommandSchema = z
+  .object({
+    type: z.literal("host.write_file"),
+    path: z.string().min(1),
+    rootPath: z.string().min(1).optional(),
+    content: z.string(),
+    contentEncoding: z.enum(["utf8", "base64"]),
+    createParents: z.boolean(),
+    expectedSha256: z.string().nullable().optional(),
+  })
+  .strict();
+
 const hostListFilesCommandSchema = z.object({
   type: z.literal("host.list_files"),
   path: z.string().min(1),
@@ -423,6 +457,45 @@ const hostListPathsCommandSchema = z
   .refine((command) => command.includeFiles || command.includeDirectories, {
     message: "At least one path kind must be included",
   });
+
+// Single-level directory listing for the interactive path browser. Unlike
+// `host.list_paths` (a recursive fuzzy-search walk over relative paths), this
+// reads exactly one directory and returns absolute child paths so the UI can
+// navigate step by step.
+const hostBrowseDirectoryCommandSchema = z.object({
+  type: z.literal("host.browse_directory"),
+  // Absolute directory to list. Omitted means the host's home directory, which
+  // the daemon resolves — a remote caller has no way to know the host's home.
+  path: z.string().min(1).optional(),
+});
+
+const hostPathsExistCommandSchema = pathsExistRequestSchema
+  .extend({
+    type: z.literal("host.paths_exist"),
+  })
+  .strict();
+
+const hostPickFolderCommandSchema = z
+  .object({
+    type: z.literal("host.pick_folder"),
+  })
+  .strict();
+
+export const directoryEntrySchema = z.object({
+  kind: hostPathEntryKindSchema,
+  name: z.string(),
+  path: z.string(),
+});
+export type DirectoryEntry = z.infer<typeof directoryEntrySchema>;
+
+export const directoryListingSchema = z.object({
+  // Resolved absolute directory that was listed (symlinks already followed).
+  directory: z.string(),
+  // Absolute parent directory, or null at the filesystem root.
+  parent: z.string().nullable(),
+  entries: z.array(directoryEntrySchema),
+});
+export type DirectoryListing = z.infer<typeof directoryListingSchema>;
 
 export const hostCommandSourceSchema = z.enum(["skill", "command"]);
 export type HostCommandSource = z.infer<typeof hostCommandSourceSchema>;
@@ -458,6 +531,7 @@ const hostListCommandsCommandSchema = z.object({
   providerId: z.string().min(1),
   cwd: z.string().min(1).nullable(),
   builtinSkillsRootPath: z.string().min(1),
+  additionalSkillsRootPaths: z.array(z.string().min(1)).optional(),
 });
 
 /**
@@ -722,7 +796,28 @@ const fileReadResultSchema = z.object({
   mimeType: z.string().optional(),
   sizeBytes: z.number().int().nonnegative(),
   modifiedAtMs: z.number().nonnegative().optional(),
+  // Hash of the returned bytes, so editors can do compare-and-swap saves via
+  // `host.write_file`'s `expectedSha256`.
+  sha256: z.string(),
 });
+
+const fileWriteResultSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("written"),
+      sha256: z.string(),
+      sizeBytes: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("conflict"),
+      // Hash of the content currently on disk; null when the file does not
+      // exist (the caller expected it to).
+      currentSha256: z.string().nullable(),
+    })
+    .strict(),
+]);
 
 const fileMetadataResultSchema = z.object({
   path: z.string(),
@@ -933,6 +1028,22 @@ const providerUsageCommandSchema = z
   .object({ type: z.literal("provider.usage") })
   .strict();
 
+const providerCliStatusCommandSchema = z
+  .object({ type: z.literal("provider_cli.status") })
+  .strict();
+
+const providerCliInstallCommandSchema = providerCliInstallRequestSchema
+  .extend({
+    type: z.literal("provider_cli.install"),
+  })
+  .strict();
+
+const providerCliInstallResultSchema = z
+  .object({
+    events: z.array(providerCliInstallEventSchema),
+  })
+  .strict();
+
 type HostDaemonCommandTransport = "settled" | "onlineRpc";
 export type HostDaemonCommandEnvironmentLane = "read" | "write";
 type HostDaemonFlushEventsBeforeResult = boolean | "when-initiated";
@@ -1140,6 +1251,33 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
+  "host.browse_directory": defineHostDaemonCommandDescriptor({
+    type: "host.browse_directory",
+    schema: hostBrowseDirectoryCommandSchema,
+    resultSchema: directoryListingSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.paths_exist": defineHostDaemonCommandDescriptor({
+    type: "host.paths_exist",
+    schema: hostPathsExistCommandSchema,
+    resultSchema: pathsExistResponseSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.pick_folder": defineHostDaemonCommandDescriptor({
+    type: "host.pick_folder",
+    schema: hostPickFolderCommandSchema,
+    resultSchema: pickFolderResponseSchema,
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
   "host.list_commands": defineHostDaemonCommandDescriptor({
     type: "host.list_commands",
     schema: hostListCommandsCommandSchema,
@@ -1185,6 +1323,15 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
+  "host.write_file": defineHostDaemonCommandDescriptor({
+    type: "host.write_file",
+    schema: hostWriteFileCommandSchema,
+    resultSchema: fileWriteResultSchema,
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
   "provider.list_models": defineHostDaemonCommandDescriptor({
     type: "provider.list_models",
     schema: providerListModelsCommandSchema,
@@ -1209,6 +1356,24 @@ export const hostDaemonCommandRegistry = {
     resultSchema: providerUsageResponseSchema,
     transport: "onlineRpc",
     retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "provider_cli.status": defineHostDaemonCommandDescriptor({
+    type: "provider_cli.status",
+    schema: providerCliStatusCommandSchema,
+    resultSchema: providerCliStatusResponseSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "provider_cli.install": defineHostDaemonCommandDescriptor({
+    type: "provider_cli.install",
+    schema: providerCliInstallCommandSchema,
+    resultSchema: providerCliInstallResultSchema,
+    transport: "onlineRpc",
+    retryable: false,
     flushEventsBeforeResult: false,
     envLane: null,
   }),

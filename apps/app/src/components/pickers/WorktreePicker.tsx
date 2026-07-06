@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { Icon } from "@/components/ui/icon.js";
+import { LIST_HOVER_TRANSITION } from "@/components/ui/motion.js";
 import {
   COARSE_POINTER_COMPACT_ICON_SIZE_CLASS,
   COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
@@ -18,6 +19,7 @@ import { getEnvironmentWorkspaceLabelIconName } from "@/lib/environment-workspac
 import {
   OPTION_BASE_CLASS_NAME,
   OPTION_INTERACTIVE_CLASS_NAME,
+  OPTION_MENU_CONTENT_CLASS_NAME,
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "./OptionPicker";
@@ -81,11 +83,11 @@ export function WorktreePicker({
           size="sm"
           aria-label="Worktree"
           disabled={disabled}
-          title={`Worktree: ${triggerLabel}`}
           data-promptbox-icon-only-control=""
           className={cn(
             OPTION_BASE_CLASS_NAME,
             !disabled && OPTION_INTERACTIVE_CLASS_NAME,
+            !disabled && LIST_HOVER_TRANSITION,
             muted && OPTION_MUTED_CLASS_NAME,
             disabled && "cursor-default disabled:opacity-100",
           )}
@@ -112,7 +114,7 @@ export function WorktreePicker({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        className="min-w-52 max-w-80"
+        className={cn(OPTION_MENU_CONTENT_CLASS_NAME, "max-w-80")}
         mobileTitle="Worktree"
       >
         <DropdownMenuLabel>Reuse existing worktree</DropdownMenuLabel>
@@ -154,7 +156,10 @@ function WorktreeMenuItem({
   return (
     <DropdownMenuItem
       onSelect={() => onSelect(option.environmentId)}
-      className="flex flex-col items-stretch gap-1 py-2"
+      className={cn(
+        "flex flex-col items-stretch gap-1 py-2",
+        LIST_HOVER_TRANSITION,
+      )}
     >
       <span className="flex min-w-0 items-center gap-2">
         <Icon

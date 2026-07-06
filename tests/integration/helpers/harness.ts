@@ -224,6 +224,7 @@ async function startIntegrationServer(
     openTimeoutMs: 50,
   });
   const config: ServerRuntimeConfig = {
+    appSurface: "web",
     appVersion: "0.0.0-dev",
     automationsAllowScriptRuns: true,
     builtinSkillsRootPath,
@@ -233,6 +234,7 @@ async function startIntegrationServer(
     featureFlags: defaultFeatureFlags,
     hostDaemonPort: 3001,
     inferenceModel: "test/mock-model",
+    inheritedSkillsRootPaths: [],
     openAiApiKey: process.env.OPENAI_API_KEY ?? "test-openai-key",
     appUrl: "https://bb.example.test",
     serverPort: 0,

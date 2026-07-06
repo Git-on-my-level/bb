@@ -34,9 +34,11 @@ describe("MessageActionBar", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Send to main thread" }),
-    );
+    const button = screen.getByRole("button", {
+      name: "Send to main thread",
+    });
+    expect(button.className).toContain("cursor-pointer");
+    fireEvent.click(button);
     expect(onSendToMain).toHaveBeenCalledTimes(1);
   });
 
@@ -54,6 +56,50 @@ describe("MessageActionBar", () => {
     expect(button.className).toContain("cursor-pointer");
     fireEvent.click(button);
     expect(onAddToChat).toHaveBeenCalledWith("Quote this message.");
+  });
+
+  it("passes add-to-chat attachments with the message text", () => {
+    const onAddToChat = vi.fn();
+    const attachment = {
+      type: "localFile" as const,
+      path: "uploads/spec.md",
+      name: "spec.md",
+      sizeBytes: 0,
+    };
+    render(
+      <MessageActionBar
+        messageText="Quote this message."
+        alignment="end"
+        addToChatAttachments={[attachment]}
+        onAddToChat={onAddToChat}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+    expect(onAddToChat).toHaveBeenCalledWith("Quote this message.", [
+      attachment,
+    ]);
+  });
+
+  it("renders add-to-chat for attachment-only messages", () => {
+    const onAddToChat = vi.fn();
+    const attachment = {
+      type: "localImage" as const,
+      path: "uploads/screenshot.png",
+      name: "screenshot.png",
+      sizeBytes: 0,
+    };
+    render(
+      <MessageActionBar
+        messageText=""
+        alignment="end"
+        addToChatAttachments={[attachment]}
+        onAddToChat={onAddToChat}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+    expect(onAddToChat).toHaveBeenCalledWith("", [attachment]);
   });
 
   it("omits the send-to-main action when no handler is supplied", () => {
@@ -98,6 +144,7 @@ describe("MessageActionBar", () => {
     const overflowTrigger = screen.getByRole("button", {
       name: "Message actions",
     });
+    expect(overflowTrigger.className).toContain("cursor-pointer");
     expect(overflowTrigger.className).toContain("hidden");
     expect(overflowTrigger.className).toContain(
       "max-md:pointer-coarse:inline-flex",

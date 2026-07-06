@@ -12,8 +12,8 @@ export type PromptPathMentionEntryKind = "file" | "directory";
  * One row in the mention menu. The `replacement` field is the literal text
  * inserted into the prompt after the user picks the suggestion (e.g.
  * `apps/app/src/foo.ts` for workspace files,
- * `thread-storage:notes/foo.md` for thread-storage files, or
- * `thread:thr_abc` for threads).
+ * `thread-storage:notes/foo.md` for thread-storage files,
+ * `thread:thr_abc` for threads, or `project:proj_abc` for projects).
  */
 export type PromptMentionSuggestion =
   | {
@@ -32,6 +32,31 @@ export type PromptMentionSuggestion =
       projectName?: string;
       threadId: string;
       title?: string;
+    }
+  | {
+      kind: "project";
+      path: string;
+      replacement: string;
+      projectId: string;
+      name: string;
+    }
+  | {
+      /**
+       * One plugin mention-provider row (plugin design §4.9), from
+       * GET /plugins/mentions/search. Items group under `providerLabel` in
+       * the menu; picking one inserts a pill whose resource carries
+       * `pluginId` + the opaque `itemId` the server resolves at send time.
+       */
+      kind: "plugin";
+      pluginId: string;
+      /** Provider id within the plugin; with pluginId it identifies the
+       * menu section (labels alone can collide across plugins). */
+      providerId: string;
+      itemId: string;
+      providerLabel: string;
+      title: string;
+      subtitle: string | null;
+      replacement: string;
     };
 
 /**
@@ -67,6 +92,9 @@ export function toProviderCommandSuggestion(
     argumentHint: command.argumentHint,
   };
 }
+
+/** Every row the command typeahead menu can render. */
+export type ComposerCommandSuggestion = ProviderCommandSuggestion;
 
 /**
  * A typeahead trigger the composer watches for. `@` opens the mention menu and
@@ -128,7 +156,7 @@ export type CommandMenuState =
   /** Suggestions resolved (possibly empty). */
   | {
       kind: "results";
-      suggestions: readonly ProviderCommandSuggestion[];
+      suggestions: readonly ComposerCommandSuggestion[];
     };
 
 /**

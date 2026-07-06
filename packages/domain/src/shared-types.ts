@@ -145,7 +145,11 @@ export type PromptMentionCommandSource = z.infer<
   typeof promptMentionCommandSourceSchema
 >;
 
-export const promptMentionCommandOriginValues = ["project", "user"] as const;
+export const promptMentionCommandOriginValues = [
+  "builtin",
+  "project",
+  "user",
+] as const;
 export const promptMentionCommandOriginSchema = z.enum(
   promptMentionCommandOriginValues,
 );
@@ -158,6 +162,11 @@ export const promptMentionResourceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("thread"),
     threadId: z.string(),
     projectId: z.string().optional(),
+    label: z.string(),
+  }),
+  z.object({
+    kind: z.literal("project"),
+    projectId: z.string(),
     label: z.string(),
   }),
   z.object({
@@ -175,6 +184,17 @@ export const promptMentionResourceSchema = z.discriminatedUnion("kind", [
     origin: promptMentionCommandOriginSchema,
     label: z.string(),
     argumentHint: z.string().nullable(),
+  }),
+  z.object({
+    kind: z.literal("plugin"),
+    pluginId: z.string(),
+    /**
+     * Opaque item reference minted by the server's mention search
+     * (`<providerId>:<provider item id>`); resolved back through the same
+     * plugin's mention provider at send time (plugin design §4.9).
+     */
+    itemId: z.string(),
+    label: z.string(),
   }),
 ]);
 export type PromptMentionResource = z.infer<typeof promptMentionResourceSchema>;

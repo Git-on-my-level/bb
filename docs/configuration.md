@@ -1,7 +1,8 @@
 # Configuration
 
 The packaged `npx bb-app` flow stores persistent package settings under
-`~/.bb/config.json` and provider environment values under `~/.bb/env.json`.
+`~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
+client SSH target mappings under `~/.bb/client.json`.
 
 Use `bb-app config` for non-secret bb settings:
 
@@ -25,12 +26,22 @@ npx bb-app env unset OPENAI_API_KEY
 `bb-app config list` shows non-secret values. `bb-app env list` redacts every
 value and only shows whether a key is set.
 
+Use `bb-app client ssh-target` to let a local helper open files from a remote
+bb server in local editors. The SSH target is the value that works after
+`ssh`, such as `devbox`, `user@devbox`, or a `Host` entry from `~/.ssh/config`:
+
+```bash
+npx bb-app client ssh-target set https://bb.example.test devbox
+npx bb-app client ssh-target list
+npx bb-app client ssh-target remove https://bb.example.test
+```
+
 ## Precedence
 
 Configuration is resolved in this order:
 
 1. Explicit launcher flags, such as `--data-dir` or `--server-port`.
-2. Persistent `bb-app config` and `bb-app env` values.
+2. Persistent `bb-app config`, `bb-app env`, and client values.
 3. Ambient shell environment.
 4. Built-in defaults.
 
@@ -58,14 +69,14 @@ starts.
 
 ## Common Keys
 
-| Key                | Command         | When to set             | Used for                                                                                                                 |
-| ------------------ | --------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `BB_APP_URL`       | `bb-app config` | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.               |
-| `BB_INFERENCE`     | `bb-app config` | Optional                | Server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.4-mini`.                                   |
-| `BB_TRANSCRIPTION` | `bb-app config` | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-4o-mini-transcribe`.                        |
-| `BB_SERVER_URL`    | `bb-app config` | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine.                                    |
-| `BB_LOG_LEVEL`     | `bb-app config` | Debugging               | Log level for the next bb start: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`.                                  |
-| `OPENAI_API_KEY`   | `bb-app env`    | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-4o-transcribe`. |
+| Key                | Command         | When to set             | Used for                                                                                                                                       |
+| ------------------ | --------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_APP_URL`       | `bb-app config` | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                     |
+| `BB_INFERENCE`     | `bb-app config` | Optional                | Server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.4-mini`.                                                         |
+| `BB_TRANSCRIPTION` | `bb-app config` | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-4o-mini-transcribe`.                                              |
+| `BB_SERVER_URL`    | `bb-app config` | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine. The CLI defaults to `http://127.0.0.1:38886` when unset. |
+| `BB_LOG_LEVEL`     | `bb-app config` | Debugging               | Log level for the next bb start: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`.                                                        |
+| `OPENAI_API_KEY`   | `bb-app env`    | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-4o-transcribe`.                       |
 
 By default, helper inference and voice transcription use Codex credentials from
 the host daemon. Run `codex login` on the host for the default path. Set
@@ -73,7 +84,36 @@ provider env keys only when opting into a non-Codex provider route.
 
 `BB_SERVER_URL` does not change where full `npx bb-app` startup binds locally.
 It is for commands that need to target an already-running server, such as the
-bundled `bb` CLI or a standalone host daemon.
+bundled `bb` CLI or a standalone host daemon. The CLI can omit it when targeting
+the default local packaged server at `http://127.0.0.1:38886`; set it for remote
+or non-default servers.
+
+## Client SSH Targets
+
+`~/.bb/client.json` is local to the machine showing the UI. The CLI resolves the
+remote server's host ID and stores a mapping from that server/work-host to an SSH
+target known to the local machine. The remote server does not read this file.
+
+Example:
+
+```json
+{
+  "servers": {
+    "https://bb.example.test": {
+      "hosts": {
+        "host_abc": {
+          "sshAuthority": "devbox"
+        }
+      }
+    }
+  }
+}
+```
+
+When a remote bb page asks the local helper to open a work-host path, the helper
+uses this mapping to launch remote-capable editors and terminals over SSH.
+Browsers or devices without a helper can still use bb; local editor actions are
+simply unavailable.
 
 ## Custom ACP Agents
 
@@ -175,6 +215,42 @@ No agent loads `.bb/AGENTS.md` natively, and provider-native instruction files
 provider-specific. bb reads the files above itself and injects them, so use them
 for guidance you want every bb thread to receive regardless of provider.
 
+## Skills
+
+User-level bb skills live under `<dataDir>/skills/<name>/SKILL.md`; for the
+packaged app this is usually `~/.bb/skills`. Project skills live under
+`<workspace>/.bb/skills/<name>/SKILL.md` and override same-named user or built-in
+skills. Running plugins contribute a third tier: every `skills/<name>/SKILL.md`
+in an installed plugin (relocatable via the manifest's `bb.skills` field) is
+auto-imported while the plugin is loaded — overridden by project and user
+skills by name, overriding built-ins.
+
+## Plugins
+
+Plugins are gated behind the "Plugins" experiment (Settings → Experiments, off
+by default). While the experiment is off, no plugin code loads and `bb plugin`
+commands report that plugins are disabled. Toggling the experiment applies
+live — enabling loads installed plugins, disabling unloads them.
+
+Plugin state lives under the data dir:
+
+```
+<dataDir>/plugins/<id>/data.db     Per-plugin SQLite database
+<dataDir>/plugins/<id>/secrets/    Secret settings and the plugin HTTP token
+<dataDir>/plugins/<id>/logs/       bb.log output (plugin.log, JSONL, rotated
+                                   at 5MB; read with `bb plugin logs <id>`)
+<dataDir>/plugins/git/, npm/       Managed installs for git:/npm: sources
+<dataDir>/skills-generated/        Server-generated skills (the
+                                   plugin-commands skill listing plugin CLI
+                                   commands, injected into agent threads)
+```
+
+`bb plugin install npm:<name>@<version>` requires `npm` on PATH (packages are
+installed with `--ignore-scripts`); `git:<url>@<ref>` requires `git`. Local
+path installs register the directory in place and never delete it. Plugins are
+full-trust code running inside the bb server process: they can read all local
+bb data, including other plugins' secrets.
+
 ## Startup Flags
 
 Use launcher flags for per-run startup details:
@@ -184,8 +260,10 @@ npx bb-app --data-dir ~/.bb-test --server-port 48886 --host-daemon-port 48887
 ```
 
 The data directory is the root directory for all bb-managed state: the SQLite
-database, logs, host identity, and thread storage. It defaults to `~/.bb/` for
-the packaged app. The `pnpm dev` source launcher derives an isolated data
+database, logs, host identity, thread storage, custom themes (`theme/`), and the
+user-editable UI source (`ui/`, see `bb ui` in the bb-cli skill — gated behind the
+"UI forking" experiment under Settings → Experiments, off by default). It defaults to
+`~/.bb/` for the packaged app. The `pnpm dev` source launcher derives an isolated data
 directory under `~/.bb-dev/<checkout-instance>/` from the checkout path. The
 checkout instance id is the sanitized path to the checkout, relative to your
 home directory, plus a short hash suffix. Use `--data-dir` to point packaged-app

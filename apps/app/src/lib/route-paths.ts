@@ -26,6 +26,8 @@ export const PROJECT_SETTINGS_ROUTE_PATH = "/projects/:projectId/settings";
 export const PROJECT_ARCHIVED_ROUTE_PATH = "/projects/:projectId/archived";
 export const THREAD_DETAIL_ROUTE_PATH =
   "/projects/:projectId/threads/:threadId";
+// Trailing splat: the remainder is the panel's `subPath` (empty at the root).
+export const PLUGIN_PANEL_ROUTE_PATH = "/plugins/:pluginId/:panelPath/*";
 
 export interface ThreadRoutePathArgs {
   projectId: string;
@@ -93,6 +95,14 @@ export function getLegacyProjectComposeRoutePath(projectId: string): string {
   return `/projects/${projectId}`;
 }
 
+// Opens a project's compose view. The personal project has no `/projects/:id`
+// surface — its compose view is the app root — so it routes there instead.
+export function getProjectComposeRoutePath(projectId: string): string {
+  return isProjectlessProjectId(projectId)
+    ? getRootComposeRoutePath()
+    : getLegacyProjectComposeRoutePath(projectId);
+}
+
 export function getProjectSettingsRoutePath(projectId: string): string {
   return `/projects/${projectId}/settings`;
 }
@@ -114,6 +124,31 @@ export function getFolderArchivedRoutePath(folderId: string): string {
   return `${PROJECTLESS_ARCHIVED_ROUTE_PATH}?folderId=${encodeURIComponent(
     folderId,
   )}`;
+}
+
+export interface PluginPanelRoutePathArgs {
+  pluginId: string;
+  /** The nav panel's registered `path` segment (validated: [a-zA-Z0-9_-]+). */
+  path: string;
+  /** Location inside the panel; segments are encoded, slashes preserved. */
+  subPath?: string;
+}
+
+export function getPluginPanelRoutePath({
+  pluginId,
+  path,
+  subPath,
+}: PluginPanelRoutePathArgs): string {
+  const root = `/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(path)}`;
+  if (subPath === undefined || subPath === "") {
+    return root;
+  }
+  const encoded = subPath
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return encoded.length > 0 ? `${root}/${encoded}` : root;
 }
 
 export function getThreadRoutePath(args: ThreadRoutePathArgs): string {
@@ -145,6 +180,7 @@ const baseRoutePatterns: readonly string[] = [
   PROJECT_ARCHIVED_ROUTE_PATH,
   PROJECTLESS_THREAD_DETAIL_ROUTE_PATH,
   THREAD_DETAIL_ROUTE_PATH,
+  PLUGIN_PANEL_ROUTE_PATH,
 ];
 
 export const ROUTE_PATTERNS = baseRoutePatterns;

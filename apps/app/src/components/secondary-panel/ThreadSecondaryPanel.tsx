@@ -57,7 +57,7 @@ import {
 import {
   CHROME_ROW_CLASS,
   getBbDesktopInfo,
-  MACOS_TRAFFIC_LIGHT_RESERVE_CLASS,
+  MACOS_APP_REGION_NO_DRAG_CLASS,
   MACOS_WINDOW_DRAG_CLASS,
   MACOS_WINDOW_NO_DRAG_CLASS,
   shouldUseMacosDesktopChrome,
@@ -85,6 +85,24 @@ const SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS = `${COARSE_POINTER_HEADER_ICON_BUT
 // Stable empty TOC reference so the collapse-controls hook's derived atom and
 // the stats memo are not rebuilt every render while the diff is loading/absent.
 const EMPTY_DIFF_FILES: readonly DiffFileEntry[] = [];
+
+// The reserved slot occupies the exact footprint of root compose's pinned
+// right-panel toggle (which is painted on top of this slot). On macOS desktop
+// the top chrome is a window-drag region ([app-region:drag]); Electron resolves
+// draggable regions in DOM order (a later region wins), so a plain slot would
+// leave the toggle's pixels inside that drag region and Electron would swallow
+// the click as a window drag; the panel could be opened but never closed. As a
+// descendant of the drag row this slot is resolved *after* it, so marking it
+// no-drag carves the toggle's footprint back out; the OS then routes the click
+// to the web contents, where the pinned toggle receives it.
+export function getReservedInlinePanelToggleClassName(
+  usesDesktopChrome: boolean,
+): string {
+  return cn(
+    SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS,
+    usesDesktopChrome && MACOS_APP_REGION_NO_DRAG_CLASS,
+  );
+}
 
 interface ResolveActiveFixedPanelArgs {
   activeTab: SecondaryFixedPanelTab | null;
@@ -128,6 +146,19 @@ export interface ThreadSecondaryPanelProps {
   showGitDiffTab?: boolean;
   showInfoTab?: boolean;
   showNewTabButton?: boolean;
+  /**
+   * How the panel's own inline hide control (top chrome, trailing edge) renders
+   * on the wide layout:
+   * - "button": render it (the default).
+   * - "reserved": render an invisible spacer of the same footprint — used when a
+   *   toggle is pinned outside the panel (root compose's fixed overlay) and must
+   *   land over a reserved slot with the tab strip kept clear of it.
+   * - "hidden": render nothing, leaving no slot — used when a stable toggle lives
+   *   elsewhere (the thread-detail full-width header) and the trailing controls
+   *   should sit flush at the edge.
+   * The drawer layout always renders the button (it carries its own close).
+   */
+  inlinePanelToggle?: "button" | "reserved" | "hidden";
   onPanelFocus: () => void;
   onPanelChange: (panel: ThreadSecondaryPanelTab) => void;
   onCollapse: () => void;
@@ -136,6 +167,7 @@ export interface ThreadSecondaryPanelProps {
   workspaceRootPath?: string | null;
   onOpenFileInEditor?: (path: string) => void;
   onOpenFilePreview?: (path: string) => void;
+  onSelectionAddToChat?: (text: string) => void;
   /**
    * When true the conversation pane is collapsed: this panel expands to fill
    * the content area (its max size is lifted). Always false in the
@@ -150,15 +182,6 @@ export interface ThreadSecondaryPanelProps {
    * conversation.
    */
   onToggleConversationCollapse: () => void;
-  /**
-   * When true, the panel is the top-left-most surface under the macOS
-   * traffic-light strip (desktop macOS + main sidebar collapsed + conversation
-   * collapsed, so only the 36px rail sits to the panel's left). Adds the full
-   * traffic-light reserve on the top chrome so the leading tabs clear the pinned
-   * sidebar-collapse trigger — which floats over the header and overhangs the
-   * rail — landing them one gap to its right rather than jammed under it.
-   */
-  reserveLeftForDesktopTrafficLights: boolean;
   /**
    * When true, render only the aside content — skip the PanelResizeHandle +
    * Panel wrappers that are only meaningful inside a desktop PanelGroup.
@@ -180,6 +203,7 @@ function resolveActiveFixedPanel({
       return "thread-info";
     case "git-diff":
       return canUseGitUi ? "git-diff" : "thread-info";
+    case "plugin-panel":
     case "workspace-file-preview":
     case "host-file-preview":
     case "thread-storage-file-preview":
@@ -209,6 +233,7 @@ export function ThreadSecondaryPanel({
   showGitDiffTab = true,
   showInfoTab = true,
   showNewTabButton = true,
+  inlinePanelToggle = "button",
   onPanelFocus,
   onPanelChange,
   onCollapse,
@@ -217,9 +242,9 @@ export function ThreadSecondaryPanel({
   workspaceRootPath,
   onOpenFileInEditor,
   onOpenFilePreview,
+  onSelectionAddToChat,
   isConversationCollapsed,
   onToggleConversationCollapse,
-  reserveLeftForDesktopTrafficLights,
   renderAsDrawer,
 }: ThreadSecondaryPanelProps) {
   const activeFileTab = fileTabs?.find((tab) => tab.isActive);
@@ -267,7 +292,12 @@ export function ThreadSecondaryPanel({
     resolveActiveFixedPanel({ activeTab, canUseGitUi }) ?? "thread-info";
   const isDiffPanelActive = activeFixedPanel === "git-diff";
   const shouldShowGitDiffTab = canUseGitUi && showGitDiffTab !== false;
-  const shouldRenderFileTabContent = isOpen;
+  // Inline, the panel slides out at a fixed width (clipped by the panel), so the
+  // body content must stay mounted through the close animation (and across
+  // open/close) instead of unmounting the instant `isOpen` flips — otherwise
+  // everything but the tab strip vanishes while the panel is still sliding. The
+  // drawer mounts its content only while open.
+  const shouldRenderFileTabContent = isOpen || !renderAsDrawer;
   const {
     gitDiffTarget,
     gitDiffSelectOptions,
@@ -349,15 +379,46 @@ export function ThreadSecondaryPanel({
     <aside
       ref={panelRef}
       aria-hidden={!isOpen}
+      // Swipe mode keeps the body mounted while closed, so mark the whole panel
+      // inert when hidden — otherwise focusable content (e.g. the new-tab search
+      // input's mount autofocus) could pull keyboard focus into the off-screen
+      // panel. The open control lives outside this aside on every surface.
+      inert={!isOpen}
       onFocusCapture={handlePanelFocusCapture}
+      // Swipe mode: the content is held at the panel's open width and absolutely
+      // pinned to the panel's LEFT edge, while the Panel's own flex width animates
+      // and its overflow-hidden clips the content into view. Two things matter:
+      //   1. No transform/opacity on the content, so it is never promoted to a
+      //      compositor layer — a composited layer is positioned by the GPU on a
+      //      separate thread from the main-thread clip and visibly drifts out of
+      //      sync mid-slide (invisible to getBoundingClientRect, which reports the
+      //      main-thread layout value). A pure layout clip stays locked.
+      //   2. `absolute left-0`, not block flow: when the fixed-width content is
+      //      wider than the mid-animation panel, the panel's flex layout CENTERS
+      //      the overflow (so the left edge clips by a width-dependent amount and
+      //      the padding breathes). Pinning left-0 keeps the content's left edge
+      //      flush to the panel edge at every width.
+      // The left border rides the content (like the sidebar's sliding panel) so it
+      // slides out with the panel on close instead of fading on its own timeline.
+      // Hold the fixed open width only while NOT dragging the resize handle.
+      // During a drag the panel width tracks the cursor (and can briefly animate),
+      // and a fixed width would desync from it — the content's right edge would
+      // pull off the panel edge. While resizing, fill the panel (left-0 + right-0
+      // below) so the content is always exactly the panel's current width.
+      style={
+        !renderAsDrawer && !isSecondaryPanelResizing
+          ? { width: `var(--secondary-swipe-width, ${persistedWidthPercent}cqw)` }
+          : undefined
+      }
       className={cn(
-        "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background",
+        "flex h-full min-h-0 flex-col overflow-hidden bg-background",
+        // Drawer: fill the drawer shell. Inline: the fixed-width, left-pinned
+        // content the panel clips into view (or fills the panel while resizing).
+        renderAsDrawer && "min-w-0 flex-1",
         !renderAsDrawer && [
-          "transition-[transform,opacity,background-color]",
-          PANEL_COLLAPSE_TRANSITION_CLASS,
-          isOpen
-            ? "opacity-100"
-            : "pointer-events-none translate-x-[8%] opacity-0",
+          "absolute inset-y-0 left-0 border-l border-border-seam-vertical",
+          isSecondaryPanelResizing && "right-0",
+          !isOpen && "pointer-events-none",
         ],
       )}
     >
@@ -372,8 +433,6 @@ export function ThreadSecondaryPanel({
             // straight up to the top with no seam.
             "min-w-0 justify-between gap-2 px-4",
             usesDesktopChrome && MACOS_WINDOW_DRAG_CLASS,
-            reserveLeftForDesktopTrafficLights &&
-              MACOS_TRAFFIC_LIGHT_RESERVE_CLASS,
           )}
         >
           <div
@@ -400,7 +459,6 @@ export function ThreadSecondaryPanel({
                 aria-pressed={
                   activeFixedPanel === "thread-info" && !hasActiveFileTab
                 }
-                title="Info"
               >
                 <Icon name="Info" />
               </Button>
@@ -417,21 +475,20 @@ export function ThreadSecondaryPanel({
                 onClick={() => onPanelChange("git-diff")}
                 aria-label="Show diff panel"
                 aria-pressed={isDiffPanelActive && !hasActiveFileTab}
-                title="Diff"
               >
                 <Icon name="FileDiff" />
               </Button>
+            ) : null}
+            {showNewTabButton ? (
+              <NewTabButton
+                onOpenNewTab={onOpenNewTab}
+                usesDesktopChrome={usesDesktopChrome}
+              />
             ) : null}
             {visibleFileTabs && visibleFileTabs.length > 0 ? (
               <SecondaryPanelTabStrip
                 fileTabs={visibleFileTabs}
                 onReorderTab={onFileTabReorder}
-                usesDesktopChrome={usesDesktopChrome}
-              />
-            ) : null}
-            {showNewTabButton ? (
-              <NewTabButton
-                onOpenNewTab={onOpenNewTab}
                 usesDesktopChrome={usesDesktopChrome}
               />
             ) : null}
@@ -450,27 +507,40 @@ export function ThreadSecondaryPanel({
                 onClick={conversationCollapseControl.onClick}
                 aria-label={conversationCollapseControl.label}
                 aria-expanded={conversationCollapseControl.isExpanded}
-                title={conversationCollapseControl.label}
               >
                 <Icon name={conversationCollapseControl.iconName} />
               </Button>
             ) : null}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS,
-                usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
-              )}
-              onClick={onClose}
-              aria-label={
-                renderAsDrawer ? "Close right panel" : "Hide right panel"
-              }
-              title={renderAsDrawer ? "Close right panel" : "Hide right panel"}
-            >
-              <Icon name={togglePanelIconName} />
-            </Button>
+            {renderAsDrawer || inlinePanelToggle === "button" ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS,
+                  usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
+                )}
+                onClick={onClose}
+                aria-label={
+                  renderAsDrawer ? "Close right panel" : "Hide right panel"
+                }
+              >
+                <Icon name={togglePanelIconName} />
+              </Button>
+            ) : inlinePanelToggle === "reserved" ? (
+              // A toggle pinned outside the panel owns show/hide on this surface
+              // (root compose's fixed overlay); reserve this slot's footprint so
+              // the tab strip stays clear and the pinned toggle lands over it.
+              // Under macOS desktop chrome the slot must carve itself out of the
+              // window-drag chrome row so the pinned toggle stays clickable; see
+              // getReservedInlinePanelToggleClassName.
+              <div
+                aria-hidden
+                className={getReservedInlinePanelToggleClassName(
+                  usesDesktopChrome,
+                )}
+              />
+            ) : null}
           </div>
         </div>
         {isDiffPanelActive && !hasActiveFileTab ? (
@@ -525,6 +595,7 @@ export function ThreadSecondaryPanel({
             gitDiffViewOptions={gitDiffViewOptions}
             onOpenFileInEditor={onOpenFileInEditor}
             onOpenFilePreview={onOpenFilePreview}
+            onSelectionAddToChat={onSelectionAddToChat}
             workspaceRootPath={workspaceRootPath}
           />
         ) : (
@@ -568,9 +639,20 @@ export function ThreadSecondaryPanel({
         order={2}
         style={SECONDARY_RESIZABLE_PANEL_STYLE}
         className={cn(
-          "min-w-0 overflow-hidden transition-[flex-grow,flex-basis,opacity]",
-          PANEL_COLLAPSE_TRANSITION_CLASS,
-          isOpen ? "opacity-100" : "opacity-0",
+          // `overflow-clip`, not `overflow-hidden`: while swiping, the held-width
+          // content is wider than the animating panel, which makes an
+          // `overflow-hidden` panel a horizontal SCROLL container — and the
+          // new-tab search input's mount autofocus then scrolls it to reveal
+          // itself, shifting all the content sideways by ~50px (the "padding
+          // breathes / left edge cut off" bug). `clip` clips identically but is
+          // not scrollable, so nothing can ever offset the content.
+          "min-w-0 overflow-clip",
+          // The Panel's own flex width is the animation: it grows to make room and
+          // its overflow clips the left-pinned content into view — one main-thread
+          // layout animation, so the clip and the content it reveals can never
+          // desync. `relative` anchors the absolutely left-pinned content; no
+          // opacity, since the content is revealed rather than faded.
+          `relative transition-[flex-grow,flex-basis] ${PANEL_COLLAPSE_TRANSITION_CLASS}`,
         )}
       >
         {asideMarkup}
@@ -596,7 +678,6 @@ function NewTabButton({ onOpenNewTab, usesDesktopChrome }: NewTabButtonProps) {
       )}
       onClick={onOpenNewTab}
       aria-label="Open new tab"
-      title="New tab"
     >
       <Icon name="Plus" />
     </Button>
@@ -628,23 +709,37 @@ function SecondaryPanelResizeHandle({
         "group relative shrink-0 overflow-visible bg-transparent transition-[width,opacity,background-color] before:absolute before:inset-y-0 before:-left-1.5 before:-right-1.5 before:content-['']",
         PANEL_COLLAPSE_TRANSITION_CLASS,
         isConversationCollapsed ? "cursor-default" : "cursor-col-resize",
-        // While collapsed the handle's hairline would sit flush against the
-        // collapsed rail's recessed edge, doubling the seam. Drag is disabled
-        // in that state anyway, so fold the handle to zero width and hide it;
-        // the rail's recessed background is then the single clean edge.
+        // Zero-width: the visible panel border lives on the content (aside
+        // border-l), so this handle is purely the drag hit area + hover seam and
+        // sits exactly on that border instead of in a 1px slot to its left (which
+        // left the hit area and hover highlight a pixel off the border). Hidden +
+        // non-interactive when closed or while the conversation is collapsed.
         isOpen && !isConversationCollapsed
-          ? "w-px opacity-100"
+          ? "w-0 opacity-100"
           : "pointer-events-none w-0 opacity-0",
         isResizing && "bg-accent/20",
       )}
       aria-label="Resize thread and right panel"
     >
+      {/*
+        The panel's persistent left border lives on the content (aside
+        `border-l`) so it slides with the panel on open/close. This seam is only
+        the resize affordance — transparent at rest (so it doesn't double the
+        content border), brightening on hover/drag.
+      */}
       <span
+        // Sit on the handle's right edge (`left-full`), which is the panel's left
+        // edge where the content border-l lives, so the hover/drag highlight lands
+        // exactly on the border instead of a pixel to its left at the handle's
+        // center.
         className={cn(
-          "pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border-seam-vertical transition-colors",
+          // z-10 so the highlight paints over the adjacent content's border-l
+          // (the content renders after the handle) instead of being hidden behind
+          // it — otherwise the hover/drag highlight is invisible.
+          "pointer-events-none absolute inset-y-0 left-full z-10 w-px transition-colors",
           isResizing
             ? "bg-accent-foreground/50"
-            : "group-hover:bg-accent-foreground/35",
+            : "bg-transparent group-hover:bg-accent-foreground/35",
         )}
       />
     </PanelResizeHandle>

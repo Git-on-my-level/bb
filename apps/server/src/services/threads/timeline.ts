@@ -8,7 +8,11 @@ import {
 } from "@bb/thread-view";
 import type { ClientTurnRequestId, Thread } from "@bb/domain";
 import type {
+  ThreadConversationOutlineItem,
+  ThreadConversationOutlineResponse,
+  TimelineConversationAttachments,
   TimelinePaginationCursor,
+  ThreadConversationOutlineAttachmentSummary,
   ThreadTimelineResponse,
   TimelineTurnSummaryDetailsResponse,
 } from "@bb/server-contract";
@@ -19,10 +23,12 @@ import {
   listContextWindowUsageRows,
   listRecentStoredEventRows,
   listStoredClientTurnRequestIdsInRange,
+  listStoredEventRowsByParentToolCallIds,
   listStoredEventRowsInRange,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listStoredTimelineWindowEventRows,
+  listStoredToolCallRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
   listTimelineSegmentAnchorsDescending,
@@ -177,6 +183,7 @@ interface BuildThreadTimelineInternalOptions extends BuildThreadTimelineOptions 
 
 interface TimelineEventRowSelection {
   acceptedClientRequestContextRows: StoredEventRow[];
+  contextOnlyToolCallIds: Set<string>;
   paginationPage: ThreadTimelinePageRequest;
   responsePageKind: ThreadTimelinePageKind;
   rows: StoredEventRow[];
@@ -184,8 +191,14 @@ interface TimelineEventRowSelection {
 }
 
 interface TimelineWindowRowsArgs {
+  includeParentContext?: boolean;
   rows: readonly StoredEventRow[];
   threadId: string;
+}
+
+interface TimelineWindowParentedRowsResult {
+  contextOnlyToolCallIds: Set<string>;
+  rows: StoredEventRow[];
 }
 
 interface SelectAcceptedClientRequestContextRowsArgs {
@@ -352,6 +365,131 @@ function mergeStoredEventRowsById(
   );
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseStoredEventData(row: StoredEventRow): Record<string, unknown> {
+  return asRecord(JSON.parse(row.data)) ?? {};
+}
+
+function getStoredEventParentToolCallId(
+  row: StoredEventRow,
+): string | undefined {
+  const data = parseStoredEventData(row);
+  const item = asRecord(data.item);
+  const itemParentToolCallId = item?.parentToolCallId;
+  if (
+    typeof itemParentToolCallId === "string" &&
+    itemParentToolCallId.length > 0
+  ) {
+    return itemParentToolCallId;
+  }
+
+  const eventParentToolCallId = data.parentToolCallId;
+  return typeof eventParentToolCallId === "string" &&
+    eventParentToolCallId.length > 0
+    ? eventParentToolCallId
+    : undefined;
+}
+
+function collectStoredToolCallItemIds(
+  rows: readonly StoredEventRow[],
+): string[] {
+  const itemIds = new Set<string>();
+  for (const row of rows) {
+    if (row.itemKind !== "toolCall" || row.itemId === null) {
+      continue;
+    }
+    itemIds.add(row.itemId);
+  }
+  return [...itemIds];
+}
+
+function collectStoredParentToolCallIds(
+  rows: readonly StoredEventRow[],
+): string[] {
+  const parentToolCallIds = new Set<string>();
+  for (const row of rows) {
+    const parentToolCallId = getStoredEventParentToolCallId(row);
+    if (parentToolCallId) {
+      parentToolCallIds.add(parentToolCallId);
+    }
+  }
+  return [...parentToolCallIds];
+}
+
+function ensureTimelineWindowParentedRows(
+  db: DbConnection,
+  args: TimelineWindowRowsArgs,
+): TimelineWindowParentedRowsResult {
+  let rows = [...args.rows];
+  const rowIds = new Set(rows.map((row) => row.id));
+  const visibleToolCallIds = new Set(collectStoredToolCallItemIds(rows));
+  const fetchedChildToolCallIds = new Set<string>();
+
+  while (true) {
+    const toolCallIdsToFetch = [...visibleToolCallIds].filter(
+      (toolCallId) => !fetchedChildToolCallIds.has(toolCallId),
+    );
+    if (toolCallIdsToFetch.length === 0) {
+      break;
+    }
+    for (const toolCallId of toolCallIdsToFetch) {
+      fetchedChildToolCallIds.add(toolCallId);
+    }
+
+    const childRows = listStoredEventRowsByParentToolCallIds(db, {
+      excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
+      parentToolCallIds: toolCallIdsToFetch,
+      threadId: args.threadId,
+    });
+    const newChildRows = childRows.filter((row) => !rowIds.has(row.id));
+    if (newChildRows.length === 0) {
+      continue;
+    }
+    for (const row of newChildRows) {
+      rowIds.add(row.id);
+      if (row.itemKind === "toolCall" && row.itemId !== null) {
+        visibleToolCallIds.add(row.itemId);
+      }
+    }
+    rows = mergeStoredEventRowsById([...rows, ...newChildRows]);
+  }
+
+  if (args.includeParentContext === false) {
+    return {
+      contextOnlyToolCallIds: new Set(),
+      rows,
+    };
+  }
+
+  const contextOnlyToolCallIds = new Set<string>();
+  const missingParentToolCallIds = collectStoredParentToolCallIds(rows).filter(
+    (parentToolCallId) => !visibleToolCallIds.has(parentToolCallId),
+  );
+  const parentRows = listStoredToolCallRowsByItemIds(db, {
+    itemIds: missingParentToolCallIds,
+    threadId: args.threadId,
+  });
+  const newParentRows = parentRows.filter((row) => !rowIds.has(row.id));
+  for (const row of parentRows) {
+    if (row.itemId !== null && !visibleToolCallIds.has(row.itemId)) {
+      contextOnlyToolCallIds.add(row.itemId);
+    }
+  }
+
+  return {
+    contextOnlyToolCallIds,
+    rows:
+      newParentRows.length > 0
+        ? mergeStoredEventRowsById([...newParentRows, ...rows])
+        : rows,
+  };
+}
+
 function selectAcceptedClientRequestContextRows(
   db: DbConnection,
   args: SelectAcceptedClientRequestContextRowsArgs,
@@ -449,6 +587,7 @@ function selectFullTimelineEventRows(
 ): TimelineEventRowSelection {
   return {
     acceptedClientRequestContextRows: [],
+    contextOnlyToolCallIds: new Set(),
     paginationPage: page,
     responsePageKind: page.kind,
     rows: listRecentStoredEventRows(db, {
@@ -683,9 +822,20 @@ function selectStandardTimelineEventRows(
           contextRows: [],
           rows: selectedRows,
         };
+  const selectedRowsWithParentedContext = ensureTimelineWindowParentedRows(db, {
+    threadId: thread.id,
+    rows: selectedRowsWithContext.rows,
+  });
+  const selectedRowsWithParentedTurnStarts =
+    ensureTimelineWindowTurnStartedRows(db, {
+      threadId: thread.id,
+      rows: selectedRowsWithParentedContext.rows,
+    });
 
   return {
     acceptedClientRequestContextRows: selectedRowsWithContext.contextRows,
+    contextOnlyToolCallIds:
+      selectedRowsWithParentedContext.contextOnlyToolCallIds,
     paginationPage:
       page.kind === "older"
         ? page
@@ -694,7 +844,7 @@ function selectStandardTimelineEventRows(
             segmentLimit: page.segmentLimit,
           },
     responsePageKind: page.kind,
-    rows: selectedRowsWithContext.rows,
+    rows: selectedRowsWithParentedTurnStarts,
     strategy:
       sequenceStart === 0 && beforeSequence === undefined
         ? "full"
@@ -873,6 +1023,7 @@ function buildThreadTimelineInternal(
         events: decodedEvents,
         options: {
           ...commonProjectionOptions,
+          contextOnlyToolCallIds: eventSelection.contextOnlyToolCallIds,
           includeNestedRows,
           providerId: thread.providerId,
           turnMessageDetail: includeNestedRows ? "full" : "summary",
@@ -938,6 +1089,99 @@ export function buildThreadTimeline(
     ...options,
     includeProfile: false,
   }).response;
+}
+
+export interface BuildThreadConversationOutlineOptions {
+  /** Thread high-water event sequence this outline reflects (echoed to clients). */
+  maxSeq: number;
+  providerDisplayName?: string;
+}
+
+const CONVERSATION_OUTLINE_PREVIEW_MAX_LENGTH = 200;
+
+function toConversationOutlinePreview(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= CONVERSATION_OUTLINE_PREVIEW_MAX_LENGTH) {
+    return normalized;
+  }
+  return normalized.slice(0, CONVERSATION_OUTLINE_PREVIEW_MAX_LENGTH).trimEnd();
+}
+
+function toConversationOutlineAttachmentSummary(
+  attachments: TimelineConversationAttachments | null,
+): ThreadConversationOutlineAttachmentSummary | null {
+  if (!attachments) {
+    return null;
+  }
+  const imageCount = attachments.webImages + attachments.localImages;
+  const fileCount = attachments.localFiles;
+  if (imageCount === 0 && fileCount === 0) {
+    return null;
+  }
+  return { imageCount, fileCount };
+}
+
+/**
+ * Projects the entire thread into a lightweight conversation outline for the
+ * table-of-contents minimap. Unlike {@link buildThreadTimeline}, this is not
+ * paginated: it reads every event and reuses the same
+ * {@link buildThreadTimelineFromEvents} projection so each outline item's `id`
+ * is identical to the timeline row it represents. That identity is what lets
+ * the minimap scroll-spy the loaded window and jump to a message once it is
+ * paginated in. Only conversation rows survive, and each is reduced to the few
+ * fields the minimap renders.
+ */
+export function buildThreadConversationOutline(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildThreadConversationOutlineOptions,
+): ThreadConversationOutlineResponse {
+  const rawEventRows = listRecentStoredEventRows(db, {
+    threadId: thread.id,
+    excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
+  });
+  const decodedRawEvents = rawEventRows.map((row) =>
+    toThreadEventWithMeta(row),
+  );
+  const decodedEvents = compactThreadTimelineSummaryEvents(decodedRawEvents);
+  const acceptedClientRequestContext: AcceptedClientRequestContext = {
+    acceptedClientRequestEvents: selectAcceptedClientRequestContextRows(db, {
+      rows: rawEventRows,
+      threadId: thread.id,
+    }).map((row) => toThreadEventWithMeta(row)),
+  };
+  const timeline = buildThreadTimelineFromEvents({
+    acceptedClientRequestContext,
+    contextWindowEvents: [],
+    events: decodedEvents,
+    options: {
+      includeDebugRawEvents: false,
+      includeNestedRows: false,
+      includeProviderUnhandledOperations: false,
+      isLatestPage: true,
+      providerDisplayName: options.providerDisplayName,
+      providerId: thread.providerId,
+      threadName: thread.title ?? thread.titleFallback ?? "",
+      threadStatus: thread.status,
+      turnMessageDetail: "summary",
+      workspaceRoot: resolveThreadWorkspaceRoot(db, thread),
+    },
+  });
+  const items: ThreadConversationOutlineItem[] = [];
+  for (const row of timeline.rows) {
+    if (row.kind !== "conversation") {
+      continue;
+    }
+    items.push({
+      id: row.id,
+      role: row.role,
+      preview: toConversationOutlinePreview(row.text),
+      attachmentSummary: toConversationOutlineAttachmentSummary(
+        row.attachments,
+      ),
+    });
+  }
+  return { items, maxSeq: options.maxSeq };
 }
 
 export function buildTimelineTurnSummaryDetails(
@@ -1010,14 +1254,14 @@ export function buildTimelineTurnSummaryDetails(
   // validated against the requested turn, that turn's start must be at or
   // before the latest selected turn row. Accepted input rows may sit after
   // sourceSeqEnd, so the lifecycle lookup uses the widened context cutoff.
-  const turnStartedRows = hasCurrentStartedRow
+  const requestedTurnStartedRows = hasCurrentStartedRow
     ? []
     : listStoredTurnStartedRowsByTurnIdsUpToSequence(db, {
         threadId: thread.id,
         sequenceCutoff: contextSequenceCutoff,
         turnIds: [options.turnId],
       });
-  if (!hasCurrentStartedRow && turnStartedRows.length === 0) {
+  if (!hasCurrentStartedRow && requestedTurnStartedRows.length === 0) {
     throw new ApiError(
       400,
       "invalid_request",
@@ -1033,14 +1277,23 @@ export function buildTimelineTurnSummaryDetails(
     },
     useExactEventRowBounds: exactEventRowsForRequestedTurn.removedRows,
   });
+  const eventRowsWithParentedChildren = ensureTimelineWindowParentedRows(db, {
+    includeParentContext: false,
+    threadId: thread.id,
+    rows: mergeStoredEventRowsById([...requestedTurnStartedRows, ...eventRows]),
+  }).rows;
+  const eventRowsWithTurnStarts = ensureTimelineWindowTurnStartedRows(db, {
+    threadId: thread.id,
+    rows: eventRowsWithParentedChildren,
+  });
   const eventRowsWithBackgroundTaskState =
     ensureTimelineWindowBackgroundTaskStateRows(db, {
       threadId: thread.id,
-      rows: eventRows,
+      rows: eventRowsWithTurnStarts,
     });
   const children = buildThreadTimelineTurnDetailsFromEvents({
-    events: [...turnStartedRows, ...eventRowsWithBackgroundTaskState].map(
-      (row) => toThreadEventWithMeta(row),
+    events: eventRowsWithBackgroundTaskState.map((row) =>
+      toThreadEventWithMeta(row),
     ),
     options: {
       includeProviderUnhandledOperations,

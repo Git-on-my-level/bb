@@ -11,6 +11,8 @@ export function getExperiments(db: DbConnection): Experiments {
       claudeCodeMockCliTraffic: systemExperiments.claudeCodeMockCliTraffic,
       popoutChat: systemExperiments.popoutChat,
       popoutChatHotkey: systemExperiments.popoutChatHotkey,
+      plugins: systemExperiments.plugins,
+      uiForking: systemExperiments.uiForking,
     })
     .from(systemExperiments)
     .where(eq(systemExperiments.id, SYSTEM_EXPERIMENTS_ROW_ID))
@@ -30,6 +32,8 @@ export function setExperiments(
       claudeCodeMockCliTraffic: experiments.claudeCodeMockCliTraffic,
       popoutChat: experiments.popoutChat,
       popoutChatHotkey: experiments.popoutChatHotkey,
+      plugins: experiments.plugins,
+      uiForking: experiments.uiForking,
       updatedAt,
     })
     .onConflictDoUpdate({
@@ -38,6 +42,8 @@ export function setExperiments(
         claudeCodeMockCliTraffic: experiments.claudeCodeMockCliTraffic,
         popoutChat: experiments.popoutChat,
         popoutChatHotkey: experiments.popoutChatHotkey,
+        plugins: experiments.plugins,
+        uiForking: experiments.uiForking,
         updatedAt,
       },
     })

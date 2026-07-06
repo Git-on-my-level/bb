@@ -4,22 +4,30 @@ import {
   type ThreadListEntry,
 } from "@bb/domain";
 import type {
+  ProjectBranchesResponse,
   ProjectWithThreadsResponse,
   SidebarBootstrapResponse,
   TerminalSession,
 } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
 import type { ReuseThreadOption } from "@/components/pickers/WorktreePicker";
+import { THREAD_HANDOFF_CREATE_SEED_LOCATION_STATE_KEY } from "@/lib/thread-handoff-request";
 import {
   buildRootComposeTerminalSessions,
   buildMobileRecentThreads,
   canCreateRootComposeTerminal,
+  hasPromptBranchSelectionChanged,
+  hasPromptOptionValueChanged,
   hasSingleUseRootComposeTargetState,
+  isProjectSourceWorktreeUnavailable,
+  mergeMissingPromptDraftAttachments,
   readFolderIdFromLocationState,
   readRootComposeFolderTargetFromLocationState,
   readInitialPromptFromLocationState,
+  restorePromptDraftAfterOptionChange,
   resolveRootComposeEffectiveEnvironmentValue,
   resolveRootComposePanelThreadId,
+  shouldStartComposingFromLocationState,
   shouldNavigateAfterThreadCreate,
 } from "./RootComposeView";
 
@@ -70,6 +78,7 @@ function makeThread(args: MakeThreadArgs): ThreadListEntry {
     parentThreadId: null,
     sourceThreadId: null,
     originKind: null,
+    originPluginId: null,
     childOrigin: null,
     archivedAt: null,
     pinnedAt: null,
@@ -123,6 +132,26 @@ function makeTerminalSession(
     createdAt: 1,
     updatedAt: 1,
     lastUserInputAt: null,
+    ...overrides,
+  };
+}
+
+function makeProjectBranchesResponse(
+  overrides: Partial<ProjectBranchesResponse>,
+): ProjectBranchesResponse {
+  return {
+    branches: [],
+    branchesTruncated: false,
+    checkout: { kind: "branch", branchName: "main", headSha: null },
+    defaultBranch: "main",
+    defaultBranchRelation: "equal",
+    defaultWorktreeBaseBranch: "main",
+    hasUncommittedChanges: false,
+    operation: { kind: "none" },
+    originDefaultBranch: "main",
+    remoteBranches: [],
+    remoteBranchesTruncated: false,
+    selectedBranch: null,
     ...overrides,
   };
 }
@@ -237,6 +266,211 @@ describe("readRootComposeFolderTargetFromLocationState", () => {
   });
 });
 
+describe("mergeMissingPromptDraftAttachments", () => {
+  it("restores attachments that disappeared during option changes", () => {
+    expect(
+      mergeMissingPromptDraftAttachments(
+        [
+          {
+            type: "localFile",
+            path: "notes.md",
+            name: "notes.md",
+            mimeType: "text/markdown",
+            sizeBytes: 32,
+          },
+        ],
+        [
+          {
+            type: "localImage",
+            path: "screenshot.png",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 64,
+          },
+        ],
+      ),
+    ).toEqual([
+      {
+        type: "localFile",
+        path: "notes.md",
+        name: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 32,
+      },
+      {
+        type: "localImage",
+        path: "screenshot.png",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: 64,
+      },
+    ]);
+  });
+
+  it("leaves attachments alone when the preserved paths are still present", () => {
+    expect(
+      mergeMissingPromptDraftAttachments(
+        [
+          {
+            type: "localImage",
+            path: "screenshot.png",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 64,
+          },
+        ],
+        [
+          {
+            type: "localImage",
+            path: "screenshot.png",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 64,
+          },
+        ],
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("restorePromptDraftAfterOptionChange", () => {
+  it("restores a full text draft that an option change cleared", () => {
+    const mention = {
+      start: 0,
+      end: 7,
+      resource: {
+        kind: "path" as const,
+        path: "README.md",
+        source: "workspace" as const,
+        entryKind: "file" as const,
+        label: "README.md",
+      },
+    };
+
+    expect(
+      restorePromptDraftAfterOptionChange({
+        currentDraft: { text: "", mentions: [], attachments: [] },
+        preservedDraft: {
+          text: "README.md please",
+          mentions: [mention],
+          attachments: [
+            {
+              type: "localImage",
+              path: "screenshot.png",
+              name: "screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 64,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      text: "README.md please",
+      mentions: [mention],
+      attachments: [
+        {
+          type: "localImage",
+          path: "screenshot.png",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 64,
+        },
+      ],
+    });
+  });
+
+  it("merges missing attachments without replacing new draft text", () => {
+    expect(
+      restorePromptDraftAfterOptionChange({
+        currentDraft: {
+          text: "newer text",
+          mentions: [],
+          attachments: [],
+        },
+        preservedDraft: {
+          text: "older text",
+          mentions: [],
+          attachments: [
+            {
+              type: "localImage",
+              path: "screenshot.png",
+              name: "screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 64,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      text: "newer text",
+      mentions: [],
+      attachments: [
+        {
+          type: "localImage",
+          path: "screenshot.png",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 64,
+        },
+      ],
+    });
+  });
+
+  it("does not rewrite an unchanged draft", () => {
+    const draft = {
+      text: "ship this",
+      mentions: [],
+      attachments: [],
+    };
+
+    expect(
+      restorePromptDraftAfterOptionChange({
+        currentDraft: draft,
+        preservedDraft: draft,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("hasPromptOptionValueChanged", () => {
+  it("treats unchanged prompt option values as no-ops", () => {
+    expect(hasPromptOptionValueChanged("codex", "codex")).toBe(false);
+    expect(hasPromptOptionValueChanged(undefined, undefined)).toBe(false);
+  });
+
+  it("detects changed prompt option values", () => {
+    expect(hasPromptOptionValueChanged("codex", "claude")).toBe(true);
+    expect(hasPromptOptionValueChanged(undefined, "auto")).toBe(true);
+  });
+});
+
+describe("hasPromptBranchSelectionChanged", () => {
+  it("treats the same branch selection as a no-op", () => {
+    expect(
+      hasPromptBranchSelectionChanged(
+        { name: "main", isNew: false },
+        { name: "main", isNew: false },
+      ),
+    ).toBe(false);
+    expect(hasPromptBranchSelectionChanged(null, null)).toBe(false);
+  });
+
+  it("detects changed branch selections", () => {
+    expect(
+      hasPromptBranchSelectionChanged(
+        { name: "main", isNew: false },
+        { name: "main", isNew: true },
+      ),
+    ).toBe(true);
+    expect(
+      hasPromptBranchSelectionChanged({ name: "main", isNew: false }, null),
+    ).toBe(true);
+    expect(
+      hasPromptBranchSelectionChanged(null, { name: "develop", isNew: false }),
+    ).toBe(true);
+  });
+});
+
 describe("hasSingleUseRootComposeTargetState", () => {
   it("treats folder targets as single-use navigation state", () => {
     expect(hasSingleUseRootComposeTargetState({ folderId: "fld_work" })).toBe(
@@ -250,8 +484,37 @@ describe("hasSingleUseRootComposeTargetState", () => {
     );
   });
 
+  it("treats handoff seeds as single-use target state", () => {
+    expect(
+      hasSingleUseRootComposeTargetState({
+        [THREAD_HANDOFF_CREATE_SEED_LOCATION_STATE_KEY]: {
+          environmentId: "env_source",
+          projectId: "proj_source",
+          sourceThreadId: "thr_source",
+          sourceThreadTitle: "Source thread",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("ignores non-target state", () => {
     expect(hasSingleUseRootComposeTargetState(null)).toBe(false);
+  });
+});
+
+describe("shouldStartComposingFromLocationState", () => {
+  it("treats sidebar new-thread focus navigation as a compose request", () => {
+    expect(shouldStartComposingFromLocationState({ focusPrompt: true })).toBe(
+      true,
+    );
+  });
+
+  it("ignores non-focus navigation state", () => {
+    expect(shouldStartComposingFromLocationState(null)).toBe(false);
+    expect(shouldStartComposingFromLocationState({})).toBe(false);
+    expect(
+      shouldStartComposingFromLocationState({ focusPrompt: false }),
+    ).toBe(false);
   });
 });
 
@@ -277,6 +540,29 @@ describe("shouldNavigateAfterThreadCreate", () => {
         isForkDraft: true,
         navigateToThreadAfterCreate: false,
       }),
+    ).toBe(true);
+  });
+});
+
+describe("isProjectSourceWorktreeUnavailable", () => {
+  it("treats unknown checkout metadata as unavailable for worktree creation", () => {
+    expect(isProjectSourceWorktreeUnavailable(undefined)).toBe(false);
+    expect(
+      isProjectSourceWorktreeUnavailable(makeProjectBranchesResponse({})),
+    ).toBe(false);
+    expect(
+      isProjectSourceWorktreeUnavailable(
+        makeProjectBranchesResponse({
+          checkout: {
+            kind: "unknown",
+            reason: "Path is not a git repository",
+          },
+          defaultBranch: null,
+          defaultBranchRelation: null,
+          defaultWorktreeBaseBranch: null,
+          originDefaultBranch: null,
+        }),
+      ),
     ).toBe(true);
   });
 });
@@ -450,9 +736,13 @@ describe("resolveRootComposePanelThreadId", () => {
 });
 
 describe("canCreateRootComposeTerminal", () => {
-  it("allows ready environments and host paths", () => {
+  const connectedHostIds = new Set(["host_1"]);
+
+  it("allows ready environments and host paths on connected hosts", () => {
     expect(
       canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: "host_1",
         terminalTarget: { kind: "environment", environmentId: "env_1" },
         environmentStatus: "ready",
       }),
@@ -460,6 +750,8 @@ describe("canCreateRootComposeTerminal", () => {
 
     expect(
       canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: "host_1",
         terminalTarget: { kind: "environment", environmentId: "env_1" },
         environmentStatus: "provisioning",
       }),
@@ -467,6 +759,8 @@ describe("canCreateRootComposeTerminal", () => {
 
     expect(
       canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: undefined,
         terminalTarget: { kind: "host_path", hostId: "host_1", cwd: "/repo" },
         environmentStatus: undefined,
       }),
@@ -474,6 +768,8 @@ describe("canCreateRootComposeTerminal", () => {
 
     expect(
       canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: undefined,
         terminalTarget: { kind: "host_path", hostId: "host_1", cwd: null },
         environmentStatus: undefined,
       }),
@@ -481,8 +777,34 @@ describe("canCreateRootComposeTerminal", () => {
 
     expect(
       canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: "host_1",
         terminalTarget: null,
         environmentStatus: "ready",
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks terminal creation on offline hosts", () => {
+    expect(
+      canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: "host_offline",
+        terminalTarget: { kind: "environment", environmentId: "env_1" },
+        environmentStatus: "ready",
+      }),
+    ).toBe(false);
+
+    expect(
+      canCreateRootComposeTerminal({
+        connectedHostIds,
+        environmentHostId: undefined,
+        terminalTarget: {
+          kind: "host_path",
+          hostId: "host_offline",
+          cwd: "/repo",
+        },
+        environmentStatus: undefined,
       }),
     ).toBe(false);
   });

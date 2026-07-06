@@ -6,6 +6,7 @@ import {
   closestCenter,
   useSensor,
   useSensors,
+  type ClientRect,
   type DragEndEvent,
   type Modifier,
 } from "@dnd-kit/core";
@@ -17,10 +18,15 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import type { Transform } from "@dnd-kit/utilities";
 import type { ThreadQueuedMessage } from "@bb/domain";
 import { Button } from "@/components/ui/button.js";
 import { Icon } from "@/components/ui/icon.js";
-import { PromptStackCard } from "@/components/promptbox/banner/PromptStackCard";
+import {
+  PromptStackCard,
+  PROMPT_STACK_COMPACT_INLAY_INSET_CLASS,
+  PROMPT_STACK_COMPACT_INLAY_SEGMENT_CLASS,
+} from "@/components/promptbox/banner/PromptStackCard";
 import { useScrollOverflowState } from "@/components/thread/timeline/useScrollOverflowState";
 import {
   Tooltip,
@@ -200,6 +206,39 @@ export function resolveQueuedMessageDrag({
   };
 }
 
+export function clampQueuedMessageDragTransform({
+  draggingNodeRect,
+  listRect,
+  scrollRect,
+  transform,
+}: {
+  draggingNodeRect: ClientRect | null;
+  listRect: ClientRect | null;
+  scrollRect: ClientRect | null;
+  transform: Transform;
+}): Transform {
+  if (!draggingNodeRect || (!listRect && !scrollRect)) {
+    return { ...transform, x: 0 };
+  }
+
+  const boundsTop = Math.max(
+    listRect?.top ?? Number.NEGATIVE_INFINITY,
+    scrollRect?.top ?? Number.NEGATIVE_INFINITY,
+  );
+  const boundsBottom = Math.min(
+    listRect?.bottom ?? Number.POSITIVE_INFINITY,
+    scrollRect?.bottom ?? Number.POSITIVE_INFINITY,
+  );
+  const minY = boundsTop - draggingNodeRect.top;
+  const maxY = boundsBottom - draggingNodeRect.bottom;
+
+  return {
+    ...transform,
+    x: 0,
+    y: Math.min(Math.max(transform.y, minY), maxY),
+  };
+}
+
 function isQuoteLine(line: string): boolean {
   return line === ">" || line.startsWith("> ");
 }
@@ -370,7 +409,6 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
           )}
           disabled={dragDisabled}
           aria-label={`Reorder queued message ${index + 1}`}
-          title="Reorder queued message"
           {...attributes}
           {...listeners}
         >
@@ -415,7 +453,6 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
               disabled={sendDisabled}
               onClick={() => onSendImmediately(queuedMessage.id)}
               aria-label="Send now"
-              title="Send now"
             >
               <Icon name="Sent" className="size-4 opacity-70" />
             </Button>
@@ -428,7 +465,6 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
             disabled={actionDisabled || isProcessing}
             onClick={() => onEdit(queuedMessage.id)}
             aria-label={`Edit queued message ${index + 1}`}
-            title="Edit queued message"
           >
             <Icon name="Edit" className="size-4 opacity-70" />
           </Button>
@@ -440,7 +476,6 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
             disabled={actionDisabled || isProcessing}
             onClick={() => onDelete(queuedMessage.id)}
             aria-label={`Delete queued message ${index + 1}`}
-            title="Delete queued message"
           >
             <Icon name="Trash2" className="size-4 opacity-70" />
           </Button>
@@ -616,24 +651,17 @@ export function QueuedMessagesList({
     [combinedIds, onReorder, onSetGroupBoundary, orderedMessages],
   );
 
-  // Keep a dragged row from being pulled outside the visible list: clamp the
-  // drag to the list's bounds and to the vertical axis.
+  // Keep a dragged row inside both the visible viewport and the rendered list:
+  // short queues should not gain scrollable overflow below the final row.
   const listRef = useRef<HTMLUListElement>(null);
   const restrictToListBounds = useCallback<Modifier>(
     ({ draggingNodeRect, transform }) => {
-      const listRect =
-        scrollRef.current?.getBoundingClientRect() ??
-        listRef.current?.getBoundingClientRect();
-      if (!listRect || !draggingNodeRect) {
-        return { ...transform, x: 0 };
-      }
-      const minY = listRect.top - draggingNodeRect.top;
-      const maxY = listRect.bottom - draggingNodeRect.bottom;
-      return {
-        ...transform,
-        x: 0,
-        y: Math.min(Math.max(transform.y, minY), maxY),
-      };
+      return clampQueuedMessageDragTransform({
+        draggingNodeRect,
+        listRect: listRef.current?.getBoundingClientRect() ?? null,
+        scrollRect: scrollRef.current?.getBoundingClientRect() ?? null,
+        transform,
+      });
     },
     [scrollRef],
   );
@@ -643,17 +671,23 @@ export function QueuedMessagesList({
   return (
     <PromptStackCard
       ariaLabel="Queued messages"
-      // Tuck the drawer's flat, borderless bottom behind the prompt box (which
-      // is `relative` + opaque, so it paints on top) so the queued list reads as
-      // coming up from behind the composer rather than floating above it.
-      className="-mb-3 overflow-hidden rounded-b-none border-b-0 pb-3"
+      className={cn(
+        "relative -mb-5 overflow-hidden rounded-b-none border-b-0 pb-3 shadow-none",
+        // Keep a hidden flat tail below the visible drawer content. The prompt
+        // box overlaps that tail, so the drawer rails continue underneath the
+        // prompt's rounded top corners without adding visible collapsed height.
+      )}
     >
-      <div className="px-2.5 pb-1 pt-2.5">
+      <div className={PROMPT_STACK_COMPACT_INLAY_INSET_CLASS}>
         <button
           type="button"
           aria-expanded={isExpanded}
           onClick={() => setIsExpanded((prev) => !prev)}
-          className="-ml-2 flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-state-hover"
+          className={cn(
+            "flex w-full min-w-0 items-center gap-1.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            PROMPT_STACK_COMPACT_INLAY_SEGMENT_CLASS,
+            "cursor-pointer text-muted-foreground hover:bg-state-hover hover:text-foreground",
+          )}
         >
           <span className="opacity-70">Queued</span>
           <span className="text-2xs text-subtle-foreground">
@@ -662,7 +696,7 @@ export function QueuedMessagesList({
           <Icon
             name="ChevronDown"
             className={cn(
-              "size-3.5 shrink-0 text-subtle-foreground transition-transform duration-200",
+              "ml-auto size-3.5 shrink-0 text-subtle-foreground transition-transform duration-200",
               isExpanded && "rotate-180",
             )}
             aria-hidden="true"
@@ -670,7 +704,10 @@ export function QueuedMessagesList({
         </button>
       </div>
       {isExpanded ? (
-        <div className="relative isolate">
+        <div
+          className="relative isolate min-w-0 overflow-hidden"
+          data-queued-messages-scroll-frame=""
+        >
           <div
             ref={scrollRef}
             data-queued-messages-scroll=""
@@ -728,14 +765,14 @@ export function QueuedMessagesList({
             <div
               aria-hidden
               data-queued-messages-fade="above"
-              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-surface-recessed to-transparent"
+              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-surface-recessed-solid to-transparent"
             />
           ) : null}
           {belowOverflow ? (
             <div
               aria-hidden
               data-queued-messages-fade="below"
-              className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-surface-recessed to-transparent"
+              className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8 bg-gradient-to-t from-surface-recessed-solid via-surface-recessed-solid/90 to-transparent"
             />
           ) : null}
         </div>

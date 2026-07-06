@@ -22,6 +22,7 @@
    * settled/closed-turn machinery, and a text-only destructive that clears AA in
    * dark mode (the --destructive fill is below the 4.5:1 text floor there). */
   --color-readback-foreground: var(--readback-foreground);
+  --color-timeline-accent: var(--timeline-accent);
   --color-file-accent: var(--file-accent);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
@@ -46,6 +47,7 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-surface-recessed: var(--surface-recessed);
+  --color-surface-recessed-solid: var(--surface-recessed-solid);
   --color-surface-raised: var(--surface-raised);
   --color-surface-scrim: var(--surface-scrim);
   --color-surface-destructive: var(--surface-destructive);
@@ -195,7 +197,7 @@
     pointer-events: none;
     opacity: 0;
     transition-property: opacity;
-    transition-duration: 150ms;
+    transition-duration: 0ms;
   }
 
   .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
@@ -208,7 +210,7 @@
   .bb-sidebar-hover-actions-fade {
     opacity: 1;
     transition-property: opacity;
-    transition-duration: 150ms;
+    transition-duration: 0ms;
   }
 
   .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
@@ -341,9 +343,10 @@
   --subtle-foreground: oklch(0.5 0 0);
   /* Recede tier between muted (7.77:1) and subtle (6.00:1); ~6.83:1 on white. */
   --readback-foreground: oklch(0.47 0 0);
-  /* Soft "paper blue" accent for file-path titles — the one tint in the
-   * otherwise-achromatic timeline. ~5.0:1 on white. */
-  --file-accent: oklch(0.55 0.1 250);
+  /* Soft "paper blue" timeline accent — the one tint in the otherwise
+   * achromatic timeline. ~5.0:1 on white. */
+  --timeline-accent: oklch(0.55 0.1 250);
+  --file-accent: var(--timeline-accent);
   /* Interactive-state fills: translucent ink so the same hover/active step
    * reads consistently on canvas, cards, and recessed surfaces alike. Over the
    * canvas these match an opaque ink-over-canvas mix exactly; on elevated
@@ -378,6 +381,9 @@
   /* Inset panel tints on the ink ramp: recessed a clear sunken step, raised a
    * faint lift, both translucent so they read on card or page alike. */
   --surface-recessed: color-mix(in oklab, var(--ink) 6%, transparent);
+  /* Opaque twin of --surface-recessed over the page bg, for overlays (e.g. the
+     queued-list scroll fades) that must not double the translucent tint. */
+  --surface-recessed-solid: color-mix(in oklab, var(--ink) 6%, var(--canvas));
   --surface-raised: color-mix(in oklab, var(--ink) 2.5%, transparent);
   --surface-scrim: color-mix(in oklab, var(--canvas) 92%, transparent);
   --surface-destructive: color-mix(
@@ -396,29 +402,42 @@
     var(--primary) 35%,
     transparent
   );
-  /* Prompt mention pills (light): a near-flat off-white chip with a quiet
-   * top-down surface step, soft border, and light shadow. The icon is a simple
-   * near-black outline glyph (near-white in dark mode). */
+  /* Prompt mention pills (light): a near-flat chip with a quiet top-down surface
+   * step, soft border, and light shadow. Every face/line derives from the
+   * --canvas/--ink anchors (label and icon are the ink itself) so a custom
+   * palette tints the pill along with the rest of the UI instead of stranding a
+   * neutral-gray chip — the shadow stays a faint neutral drop. */
   --pill-surface: linear-gradient(
     to bottom,
-    oklch(0.97 0 0),
-    oklch(0.968 0 0)
+    color-mix(in oklch, var(--ink) 4.4%, var(--canvas)),
+    color-mix(in oklch, var(--ink) 4.7%, var(--canvas))
   );
   --pill-surface-border: var(--border);
-  --pill-foreground: oklch(0.28 0 0);
-  --pill-icon: oklch(0.2 0 0);
+  --pill-foreground: var(--ink);
+  --pill-icon: var(--ink);
   --pill-shadow: 0 1px 1px 0 oklch(0.2 0 0 / 0.02);
   --pill-surface-selected: linear-gradient(
     to bottom,
-    oklch(0.92 0 0),
-    oklch(0.912 0 0)
+    color-mix(in oklch, var(--ink) 11.8%, var(--canvas)),
+    color-mix(in oklch, var(--ink) 13%, var(--canvas))
   );
-  --pill-surface-selected-border: oklch(0.87 0 0);
+  --pill-surface-selected-border: color-mix(
+    in oklch,
+    var(--ink) 19.2%,
+    var(--canvas)
+  );
   --sidebar: color-mix(in oklch, var(--ink) 2.2%, var(--canvas));
   --sidebar-foreground: var(--ink);
   --sidebar-accent: color-mix(in oklch, var(--ink) 8%, var(--canvas));
   --sidebar-accent-foreground: var(--ink);
   --sidebar-border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+  /* Search-match highlight: a manilla-folder tint over the canvas. Chromatic on
+     purpose (the neutral ramp can't make beige) and mixed with the canvas so it
+     tracks custom palettes instead of stranding a fixed swatch. Mix in oklab, not
+     oklch: in the polar space the achromatic canvas drags the manilla hue toward
+     0° and the result comes out salmon — oklab carries the hue through. */
+  --sidebar-search-match: color-mix(in oklab, oklch(0.8 0.13 88), var(--canvas) 76%);
+  --sidebar-search-match-border: color-mix(in oklab, oklch(0.8 0.13 88), var(--canvas) 60%);
   --sidebar-ring: var(--primary);
   --font-sans: "Inter Variable", Inter, sans-serif;
   --font-serif: Georgia, serif;
@@ -528,8 +547,9 @@
   --subtle-foreground: oklch(0.68 0 0);
   /* Recede tier between muted (9.14:1) and subtle (6.35:1); ~7.24:1 on canvas. */
   --readback-foreground: oklch(0.715 0 0);
-  /* Soft "paper blue" file-path accent, lifted for the dark canvas (~6:1). */
-  --file-accent: oklch(0.72 0.09 250);
+  /* Soft "paper blue" timeline accent, lifted for the dark canvas (~6:1). */
+  --timeline-accent: oklch(0.72 0.09 250);
+  --file-accent: var(--timeline-accent);
   /* Interactive-state fills: translucent ink so the same hover/active step
    * reads consistently on canvas, cards, and recessed surfaces alike. */
   --state-hover: color-mix(in oklab, var(--ink) 13.8%, transparent);
@@ -558,6 +578,9 @@
   --ring: var(--primary);
   /* Same model as light; ink is light here, so these lift the dark canvas. */
   --surface-recessed: color-mix(in oklab, var(--ink) 6%, transparent);
+  /* Opaque twin of --surface-recessed over the page bg, for overlays (e.g. the
+     queued-list scroll fades) that must not double the translucent tint. */
+  --surface-recessed-solid: color-mix(in oklab, var(--ink) 6%, var(--canvas));
   --surface-raised: color-mix(in oklab, var(--ink) 2.5%, transparent);
   --surface-scrim: color-mix(in oklab, var(--canvas) 92%, transparent);
   --surface-destructive: color-mix(
@@ -577,28 +600,38 @@
     transparent
   );
   /* Prompt mention pills (dark): a raised graphite chip a few steps lighter than
-   * the canvas with a light label and a near-white icon glyph. Mirrors the light
-   * block's token set so the pill is fully theme-dependent. */
+   * the canvas with a light label and icon glyph. Mirrors the light block:
+   * every face/line derives from the --canvas/--ink anchors (label and icon are
+   * the ink itself) so a custom palette tints the pill instead of stranding a
+   * neutral-gray chip — the shadow stays a faint neutral drop. */
   --pill-surface: linear-gradient(
     to bottom,
-    oklch(0.275 0 0),
-    oklch(0.268 0 0)
+    color-mix(in oklch, var(--ink) 13%, var(--canvas)),
+    color-mix(in oklch, var(--ink) 11.9%, var(--canvas))
   );
   --pill-surface-border: var(--border);
-  --pill-foreground: oklch(0.86 0 0);
-  --pill-icon: oklch(0.88 0 0);
+  --pill-foreground: var(--ink);
+  --pill-icon: var(--ink);
   --pill-shadow: 0 1px 1px 0 oklch(0 0 0 / 0.08);
   --pill-surface-selected: linear-gradient(
     to bottom,
-    oklch(0.322 0 0),
-    oklch(0.31 0 0)
+    color-mix(in oklch, var(--ink) 20.7%, var(--canvas)),
+    color-mix(in oklch, var(--ink) 18.7%, var(--canvas))
   );
-  --pill-surface-selected-border: oklch(0.35 0 0);
+  --pill-surface-selected-border: color-mix(
+    in oklch,
+    var(--ink) 25.2%,
+    var(--canvas)
+  );
   --sidebar: color-mix(in oklch, var(--ink) 4.3%, var(--canvas));
   --sidebar-foreground: var(--ink);
   --sidebar-accent: color-mix(in oklch, var(--ink) 12%, var(--canvas));
   --sidebar-accent-foreground: var(--ink);
   --sidebar-border: color-mix(in oklch, var(--ink) 18.1%, var(--canvas));
+  /* Search-match highlight: see the light block (oklab mix, same hue caveat).
+     Mixed with the (dark) canvas so the manilla reads as a muted tan. */
+  --sidebar-search-match: color-mix(in oklab, oklch(0.8 0.13 88), var(--canvas) 80%);
+  --sidebar-search-match-border: color-mix(in oklab, oklch(0.8 0.13 88), var(--canvas) 67%);
   --sidebar-ring: var(--primary);
   --font-sans: "Inter Variable", Inter, sans-serif;
   --font-serif: Georgia, serif;

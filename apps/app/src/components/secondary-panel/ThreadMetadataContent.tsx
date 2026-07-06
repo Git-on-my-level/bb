@@ -83,6 +83,8 @@ import { useUrlAnchorClickHandler } from "@/lib/url-open-routing";
 
 const GITHUB_FAVICON_URL =
   "https://github.githubassets.com/favicons/favicon.png";
+const GITHUB_DARK_FAVICON_URL =
+  "https://github.githubassets.com/favicons/favicon-dark.png";
 
 export interface ParentSelectorRowProps {
   thread: Thread;
@@ -311,7 +313,6 @@ export function EnvironmentRow({
           <button
             type="button"
             aria-label="Create new thread in this worktree"
-            title="New thread in this worktree"
             onClick={createThreadInWorktree}
             className="inline-flex shrink-0 items-center justify-center rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground"
           >
@@ -458,19 +459,26 @@ export function PullRequestRow({ pullRequest }: PullRequestRowProps) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={handlePullRequestClick}
-        title={pullRequest.title}
         aria-label={`Pull request ${pullRequest.number}: ${attentionDisplay.label}`}
         className="flex h-5 max-w-full min-w-0 items-center gap-2 text-xs text-foreground no-underline transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         {showGithubCheckIcon ? (
           <PullRequestGithubCheckIcon pullRequest={pullRequest} />
         ) : (
-          <img
-            src={GITHUB_FAVICON_URL}
-            alt=""
-            className="size-4 shrink-0"
-            aria-hidden="true"
-          />
+          <>
+            <img
+              src={GITHUB_FAVICON_URL}
+              alt=""
+              className="size-4 shrink-0 dark:hidden"
+              aria-hidden="true"
+            />
+            <img
+              src={GITHUB_DARK_FAVICON_URL}
+              alt=""
+              className="hidden size-4 shrink-0 dark:block"
+              aria-hidden="true"
+            />
+          </>
         )}
         <span className="shrink-0 text-muted-foreground">
           #{pullRequest.number}
@@ -722,7 +730,6 @@ function ThreadCommitListItem({
       <button
         type="button"
         aria-label={`Copy commit ${commit.shortSha} SHA`}
-        title={commit.sha}
         className={COMMIT_SHA_CHIP_CLASS_NAME}
         onClick={() => {
           void copyToClipboardWithToast(commit.sha, {

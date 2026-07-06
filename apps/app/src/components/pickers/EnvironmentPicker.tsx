@@ -16,11 +16,13 @@ import {
   COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
   COARSE_POINTER_ICON_SIZE_CLASS,
 } from "@/components/ui/coarse-pointer-sizing.js";
+import { LIST_HOVER_TRANSITION } from "@/components/ui/motion.js";
 import { getEnvironmentWorkspaceLabelIconName } from "@/lib/environment-workspace-display";
 import { cn } from "@/lib/utils";
 import {
   OPTION_BASE_CLASS_NAME,
   OPTION_INTERACTIVE_CLASS_NAME,
+  OPTION_MENU_CONTENT_CLASS_NAME,
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "./OptionPicker";
@@ -56,6 +58,8 @@ export interface EnvironmentPickerUIProps {
    * reuse. The entry is always rendered so the affordance stays
    * discoverable; it just can't be selected. */
   reuseDisabled?: boolean;
+  /** Reason to disable "New worktree" while leaving local/remote work usable. */
+  worktreeDisabledReason?: string | null;
   /** Render with the dim, hover-to-foreground treatment used inside the prompt box. */
   muted?: boolean;
   /** Render as a non-interactive label while preserving the selected mode. */
@@ -74,6 +78,7 @@ export function EnvironmentPickerUI({
   host,
   isLocal,
   reuseDisabled,
+  worktreeDisabledReason,
   muted,
   disabled = false,
   className,
@@ -103,6 +108,8 @@ export function EnvironmentPickerUI({
   const workspaceDisabledReason = hasSource
     ? null
     : "Project source unavailable";
+  const newWorktreeDisabledReason =
+    workspaceDisabledReason ?? worktreeDisabledReason ?? null;
   const reuseDisabledReason = reuseDisabled
     ? "No worktrees in this project yet"
     : null;
@@ -153,11 +160,11 @@ export function EnvironmentPickerUI({
           size="sm"
           aria-label="Environment"
           disabled={disabled}
-          title={`Environment: ${selected.modeLabel}`}
           data-promptbox-icon-only-control=""
           className={cn(
             OPTION_BASE_CLASS_NAME,
             !disabled && OPTION_INTERACTIVE_CLASS_NAME,
+            !disabled && LIST_HOVER_TRANSITION,
             muted && OPTION_MUTED_CLASS_NAME,
             disabled && "cursor-default disabled:opacity-100",
             className,
@@ -192,7 +199,7 @@ export function EnvironmentPickerUI({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        className="min-w-52 max-w-80"
+        className={cn(OPTION_MENU_CONTENT_CLASS_NAME, "max-w-80")}
         mobileTitle="Environment"
       >
         <EnvironmentOptionsSection
@@ -201,6 +208,7 @@ export function EnvironmentPickerUI({
           hostUnavailableReason={hostUnavailableReason}
           localLabel={localLabel}
           workspaceDisabledReason={workspaceDisabledReason}
+          worktreeDisabledReason={newWorktreeDisabledReason}
           reuseDisabledReason={reuseDisabledReason}
           selectedType={parsed?.type}
           value={value}
@@ -222,6 +230,8 @@ interface EnvironmentOptionsSectionProps {
   localLabel: string;
   /** Why the local/worktree options are unavailable, or null when usable. */
   workspaceDisabledReason: string | null;
+  /** Why the worktree option is unavailable, or null when usable. */
+  worktreeDisabledReason: string | null;
   /** Why the reuse option is unavailable, or null when usable. */
   reuseDisabledReason: string | null;
   selectedType:
@@ -237,6 +247,7 @@ function EnvironmentOptionsSection({
   hostUnavailableReason,
   localLabel,
   workspaceDisabledReason,
+  worktreeDisabledReason,
   reuseDisabledReason,
   selectedType,
   value,
@@ -246,16 +257,21 @@ function EnvironmentOptionsSection({
   const worktreeValue = hostId ? encodeHostValue(hostId, "worktree") : null;
   const workspaceDisabled = workspaceDisabledReason !== null;
   const workspaceDisabledDescription = workspaceDisabledReason ?? undefined;
+  const worktreeDisabled = worktreeDisabledReason !== null;
+  const worktreeDisabledDescription = worktreeDisabledReason ?? undefined;
 
   return (
     <DropdownMenuGroup>
       {hostName ? (
-        <DropdownMenuLabel className="truncate text-muted-foreground">
+        <DropdownMenuLabel className="whitespace-normal break-words text-muted-foreground">
           {hostName}
         </DropdownMenuLabel>
       ) : null}
       {hostUnavailableReason !== null ? (
-        <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+        <DropdownMenuItem
+          disabled
+          className="whitespace-normal break-words text-xs text-muted-foreground"
+        >
           {hostUnavailableReason}
         </DropdownMenuItem>
       ) : (
@@ -272,10 +288,10 @@ function EnvironmentOptionsSection({
           />
           <EnvironmentMenuItem
             label="New worktree"
-            description={workspaceDisabledDescription}
+            description={worktreeDisabledDescription}
             icon={getEnvironmentWorkspaceLabelIconName("managed-worktree")}
             selected={worktreeValue !== null && value === worktreeValue}
-            disabled={workspaceDisabled || worktreeValue === null}
+            disabled={worktreeDisabled || worktreeValue === null}
             onSelect={() => {
               if (worktreeValue !== null) onChange(worktreeValue);
             }}
@@ -321,25 +337,36 @@ function EnvironmentMenuItem({
         if (disabled) return;
         onSelect();
       }}
-      className="flex items-center justify-between gap-3"
+      className={cn(
+        "flex items-start justify-between gap-3 whitespace-normal",
+        LIST_HOVER_TRANSITION,
+      )}
     >
-      <span className="flex min-w-0 items-center gap-2">
+      <span className="flex min-w-0 flex-1 items-start gap-2">
         <Icon
           name={icon}
           className={cn(
+            "mt-0.5",
             "text-muted-foreground",
             COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
           )}
         />
         <span className="flex min-w-0 flex-col">
-          <span className="truncate text-xs">{label}</span>
-          {description ? <span className="text-xs">{description}</span> : null}
+          <span className="whitespace-normal break-words text-xs">
+            {label}
+          </span>
+          {description ? (
+            <span className="mt-0.5 whitespace-normal break-words text-xs leading-snug text-muted-foreground">
+              {description}
+            </span>
+          ) : null}
         </span>
       </span>
       <Icon
         name="Check"
         className={cn(
           COARSE_POINTER_ICON_SIZE_CLASS,
+          "shrink-0",
           selected ? "opacity-100" : "opacity-0",
         )}
       />

@@ -56,6 +56,7 @@ function createThread(
     parentThreadId: null,
     sourceThreadId: null,
     originKind: null,
+    originPluginId: null,
     childOrigin: null,
     archivedAt: null,
     pinnedAt: null,
@@ -863,6 +864,41 @@ describe("folder bucketing", () => {
     expect(summarizeItems(items)).toEqual([
       { folder: "chronological::fld_personal", name: "Personal", items: ["b"] },
       { folder: "chronological::fld_work", name: "Work", items: ["a"] },
+    ]);
+  });
+
+  it("nests a child thread under its parent root inside a folder", () => {
+    const items = buildChronologicalThreadList(
+      [
+        createThread({
+          id: "parent",
+          title: "Parent",
+          folderId: "fld_work",
+          createdAt: 20,
+        }),
+        createThread({
+          id: "child",
+          parentThreadId: "parent",
+          title: "Child",
+          createdAt: 10,
+        }),
+      ],
+      compareByCreatedAtDescending,
+      {
+        groupBy: "folder",
+        containerId: "chronological",
+        folders: [{ id: "fld_work", name: "Work" }],
+      },
+    );
+
+    // The child follows its parent into the folder as a nested row rather than
+    // splitting out as a loose top-level thread.
+    expect(summarizeItems(items)).toEqual([
+      {
+        folder: "chronological::fld_work",
+        name: "Work",
+        items: [{ id: "parent", children: ["child"] }],
+      },
     ]);
   });
 

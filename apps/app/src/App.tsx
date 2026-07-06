@@ -13,6 +13,8 @@ import {
   useDesktopUpdateAvailableToast,
   useUpdateAvailableToast,
 } from "./hooks/useUpdateAvailableToast";
+import { useUiSourceStatusToast } from "./hooks/useUiSourceStatusToast";
+import { usePluginFrontendBoot } from "./hooks/usePluginFrontendBoot";
 import { useWebSocket } from "./hooks/useWebSocket";
 import {
   APP_ROOT_ROUTE_PATH,
@@ -20,6 +22,7 @@ import {
   AUTOMATIONS_ROUTE_PATH,
   AUTOMATION_DETAIL_ROUTE_PATH,
   LEGACY_PROJECT_COMPOSE_ROUTE_PATH,
+  PLUGIN_PANEL_ROUTE_PATH,
   POPOUT_ROUTE_PATH,
   PROJECT_ARCHIVED_ROUTE_PATH,
   PROJECTLESS_ARCHIVED_ROUTE_PATH,
@@ -65,6 +68,11 @@ const ArchivedThreadsView = lazy(() =>
 const PopoutChatView = lazy(() =>
   import("./views/PopoutChatView").then((m) => ({
     default: m.PopoutChatView,
+  })),
+);
+const PluginPanelView = lazy(() =>
+  import("./views/PluginPanelView").then((m) => ({
+    default: m.PluginPanelView,
   })),
 );
 
@@ -134,6 +142,10 @@ function AppRoutes() {
             element={<ThreadDetailRoute />}
           />
           <Route
+            path={PLUGIN_PANEL_ROUTE_PATH}
+            element={<PluginPanelView />}
+          />
+          <Route
             path="*"
             element={<Navigate to={APP_ROOT_ROUTE_PATH} replace />}
           />
@@ -150,6 +162,8 @@ export function App() {
   useUpdateAvailableToast();
   // Show a separate toast when the Electron shell reports a desktop update.
   useDesktopUpdateAvailableToast();
+  // Surface UI-source build failures / rebase-needed state from `bb ui`.
+  useUiSourceStatusToast();
   // Keep the Electron window chrome (traffic lights, inactive title bar)
   // in sync with bb's resolved theme.
   useDesktopThemeSync();
@@ -158,6 +172,8 @@ export function App() {
   // Reconcile the favicon tint with the server-stored appearance (and migrate
   // any legacy localStorage-only preference on first load).
   useFaviconColorSync();
+  // Load plugin frontend bundles once the `plugins` experiment resolves.
+  usePluginFrontendBoot();
 
   return (
     <QuickCreateProjectProvider>

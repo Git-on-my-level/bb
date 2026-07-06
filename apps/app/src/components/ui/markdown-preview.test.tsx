@@ -3,7 +3,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownPreview } from "./markdown-preview";
-import type { MarkdownLinkRouting } from "./markdown-link-routing";
+import {
+  MarkdownLocalFileOpenWithContext,
+  type MarkdownLinkRouting,
+} from "./markdown-link-routing";
 
 const workspaceLinkRouting = {
   localFile: {
@@ -25,6 +28,36 @@ afterEach(() => {
 });
 
 describe("MarkdownPreview", () => {
+  it("syntax-highlights fenced code blocks", () => {
+    const { container } = render(
+      <MarkdownPreview content={"```ts\nconst x = 1;\n```"} />,
+    );
+    expect(container.querySelector(".sh__line")).not.toBeNull();
+    expect(container.querySelector(".sh__token--keyword")).not.toBeNull();
+  });
+
+  it("HTML-escapes fenced code so it cannot inject markup", () => {
+    const { container } = render(
+      <MarkdownPreview
+        content={'```ts\nconst html = "<script>alert(1)</script>";\n```'}
+      />,
+    );
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent).toContain("<script>alert(1)</script>");
+  });
+
+  it("toggles soft wrap on a fenced code block", () => {
+    const { container } = render(
+      <MarkdownPreview content={"```ts\nconst value = 1;\n```"} />,
+    );
+    const pre = container.querySelector("pre");
+    expect(pre?.classList.contains("overflow-x-auto")).toBe(true);
+    expect(pre?.classList.contains("whitespace-pre-wrap")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Wrap long lines" }));
+    expect(pre?.classList.contains("whitespace-pre-wrap")).toBe(true);
+    expect(pre?.classList.contains("overflow-x-auto")).toBe(false);
+  });
+
   it("renders inline-code Markdown file paths as local file links", () => {
     render(
       <MarkdownPreview
@@ -42,6 +75,51 @@ describe("MarkdownPreview", () => {
         .getAttribute("href"),
     ).toBe("file:///workspace/docs/guide.markdown#L4");
     expect(screen.getByText("src/app.ts").tagName).toBe("CODE");
+  });
+
+  it("shows an Open with menu on local file links when the context provides items", () => {
+    const openBuiltin = vi.fn();
+    const openWithPlugin = vi.fn();
+    render(
+      <MarkdownLocalFileOpenWithContext.Provider
+        value={(link) =>
+          link.path.endsWith(".md")
+            ? [
+                {
+                  id: "builtin",
+                  label: "Open with built-in preview",
+                  onSelect: openBuiltin,
+                },
+                {
+                  id: "notes:editor",
+                  label: "Open with Notes editor",
+                  onSelect: openWithPlugin,
+                },
+              ]
+            : null
+        }
+      >
+        <MarkdownPreview
+          content="See [notes](/workspace/notes/todo.md) and [app](/workspace/src/app.ts)."
+          linkRouting={{
+            localFile: {
+              absoluteLinks: { kind: "trusted-host" },
+              onOpenLink: vi.fn(() => true),
+            },
+          }}
+        />
+      </MarkdownLocalFileOpenWithContext.Provider>,
+    );
+
+    const link = screen.getByRole("link", { name: /notes/ });
+    fireEvent.contextMenu(link);
+    fireEvent.click(screen.getByText("Open with Notes editor"));
+    expect(openWithPlugin).toHaveBeenCalledTimes(1);
+    expect(openBuiltin).not.toHaveBeenCalled();
+
+    // The provider returned null for the .ts link — plain anchor, no menu.
+    fireEvent.contextMenu(screen.getByRole("link", { name: /app/ }));
+    expect(screen.queryByText(/Open with/)).toBeNull();
   });
 
   it("leaves inline-code Markdown paths as code without local file routing", () => {
@@ -98,5 +176,54 @@ describe("MarkdownPreview", () => {
     expect(link.getAttribute("href")).toBe(
       `${window.location.protocol}//${window.location.hostname}:5173/demo`,
     );
+  });
+
+  it("renders inline LaTeX math with KaTeX", () => {
+    const { container } = render(
+      <MarkdownPreview content={"Mass-energy is $E = mc^2$ exactly."} />,
+    );
+
+    expect(container.querySelector(".katex")).not.toBeNull();
+    expect(container.querySelector(".katex-display")).toBeNull();
+  });
+
+  it("renders display LaTeX math blocks with KaTeX", () => {
+    const { container } = render(
+      <MarkdownPreview content={"$$\n\\frac{1}{2} + \\frac{1}{2} = 1\n$$"} />,
+    );
+
+    expect(container.querySelector(".katex-display")).not.toBeNull();
+  });
+
+  it("leaves escaped dollar amounts as literal text", () => {
+    const { container } = render(
+      <MarkdownPreview content={"It went from \\$5 to \\$10 last week."} />,
+    );
+
+    expect(container.querySelector(".katex")).toBeNull();
+    expect(container.textContent).toContain("$5");
+    expect(container.textContent).toContain("$10");
+  });
+
+  it("renders math while still sanitizing untrusted HTML when allowHtml is set", () => {
+    const { container } = render(
+      <MarkdownPreview
+        allowHtml
+        content={"$a^2 + b^2 = c^2$\n\n<script>alert(1)</script>"}
+      />,
+    );
+
+    expect(container.querySelector(".katex")).not.toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent).not.toContain("alert(1)");
+  });
+
+  it("contains invalid TeX instead of throwing", () => {
+    const { container } = render(
+      <MarkdownPreview content={"Broken: $\\frac{1}{$ keeps rendering."} />,
+    );
+
+    expect(container.querySelector(".katex-error")).not.toBeNull();
+    expect(container.textContent).toContain("keeps rendering.");
   });
 });

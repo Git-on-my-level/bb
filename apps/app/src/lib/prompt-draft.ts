@@ -8,6 +8,10 @@ import {
   type UploadedPromptAttachment,
 } from "@bb/server-contract";
 import { z } from "zod";
+import {
+  isLoopPromptCommandResource,
+  SUBMITTED_LOOP_PROMPT_PREFIX,
+} from "./loop-prompt";
 
 export type PromptDraftAttachment = UploadedPromptAttachment;
 
@@ -47,6 +51,27 @@ export function emptyPromptDraftState(): PromptDraftState {
   };
 }
 
+function normalizeQuotedSelectionText(text: string): string {
+  const lines = text.replace(/\r\n|\r/gu, "\n").split("\n");
+  const normalizedLines: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const previousLine = normalizedLines.at(-1);
+    const nextLine = lines[index + 1];
+    if (
+      line.trim().length === 0 &&
+      previousLine?.startsWith(">") === true &&
+      nextLine?.startsWith(">") === true
+    ) {
+      continue;
+    }
+    normalizedLines.push(line);
+  }
+
+  return normalizedLines.join("\n").trim();
+}
+
 /**
  * Append a quoted selection to the draft text as a `> `-prefixed blockquote
  * block. The editor parses these blocks into real blockquote nodes; the user
@@ -59,7 +84,7 @@ export function appendQuoteToDraftText(
 ): PromptDraftState {
   // Guard the boundary: an empty/whitespace-only selection would otherwise
   // emit a bare "> " block and make an empty draft look dirty.
-  const trimmed = quotedText.trim();
+  const trimmed = normalizeQuotedSelectionText(quotedText);
   if (trimmed === "") return state;
 
   const block = trimmed
@@ -68,10 +93,38 @@ export function appendQuoteToDraftText(
     .join("\n");
 
   // Trailing newline so the reply paragraph sits below the quote.
-  const text =
-    state.text === "" ? `${block}\n` : `${state.text}\n${block}\n`;
+  const text = state.text === "" ? `${block}\n` : `${state.text}\n${block}\n`;
 
   return { ...state, text };
+}
+
+export function appendQuoteAndAttachmentsToDraft(
+  state: PromptDraftState,
+  quotedText: string,
+  attachments: readonly PromptDraftAttachment[],
+): PromptDraftState {
+  const quotedState = appendQuoteToDraftText(state, quotedText);
+  if (attachments.length === 0) {
+    return quotedState;
+  }
+
+  const existingAttachmentPaths = new Set(
+    quotedState.attachments.map((attachment) => attachment.path),
+  );
+  const mergedAttachments = [...quotedState.attachments];
+  for (const attachment of attachments) {
+    if (existingAttachmentPaths.has(attachment.path)) {
+      continue;
+    }
+    existingAttachmentPaths.add(attachment.path);
+    mergedAttachments.push(attachment);
+  }
+
+  if (mergedAttachments.length === quotedState.attachments.length) {
+    return quotedState;
+  }
+
+  return { ...quotedState, attachments: mergedAttachments };
 }
 
 export function isPromptDraftEmpty(draft: PromptDraftState): boolean {
@@ -146,6 +199,69 @@ function normalizePromptTextMentions(
     .sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
+interface ExpandedPromptText {
+  text: string;
+  mentions: PromptTextMention[];
+}
+
+function expandLoopPromptCommandMentions(
+  text: string,
+  mentions: readonly PromptTextMention[],
+): ExpandedPromptText {
+  const loopMentions = mentions
+    .filter((mention) => isLoopPromptCommandResource(mention.resource))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+
+  if (loopMentions.length === 0) {
+    return { text, mentions: [...mentions] };
+  }
+
+  const replacements: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  let nextText = "";
+  for (const mention of loopMentions) {
+    if (mention.start < cursor) {
+      continue;
+    }
+    replacements.push({ start: mention.start, end: mention.end });
+    nextText += text.slice(cursor, mention.start);
+    nextText += SUBMITTED_LOOP_PROMPT_PREFIX;
+    cursor = mention.end;
+  }
+  nextText += text.slice(cursor);
+
+  const nextMentions = mentions.flatMap((mention) => {
+    if (isLoopPromptCommandResource(mention.resource)) {
+      return [];
+    }
+
+    let offset = 0;
+    for (const replacement of replacements) {
+      if (mention.start < replacement.end && mention.end > replacement.start) {
+        return [];
+      }
+      if (replacement.end <= mention.start) {
+        offset +=
+          SUBMITTED_LOOP_PROMPT_PREFIX.length -
+          (replacement.end - replacement.start);
+      }
+    }
+
+    return [
+      {
+        ...mention,
+        start: mention.start + offset,
+        end: mention.end + offset,
+      },
+    ];
+  });
+
+  return {
+    text: nextText,
+    mentions: normalizePromptTextMentions(nextMentions, nextText.length),
+  };
+}
+
 export function promptDraftToInput(draft: PromptDraftState): PromptInput[] {
   const input: PromptInput[] = [];
 
@@ -169,10 +285,11 @@ export function promptDraftToInput(draft: PromptDraftState): PromptInput[] {
       }),
       text.length,
     );
+    const expandedText = expandLoopPromptCommandMentions(text, mentions);
     input.push({
       type: "text",
-      text,
-      mentions,
+      text: expandedText.text,
+      mentions: expandedText.mentions,
     });
   }
 
@@ -189,7 +306,7 @@ export function promptDraftToInput(draft: PromptDraftState): PromptInput[] {
       type: "localFile",
       path: attachment.path,
       name: attachment.name,
-      sizeBytes: attachment.sizeBytes,
+      ...(attachment.sizeBytes > 0 ? { sizeBytes: attachment.sizeBytes } : {}),
       ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
     });
   }

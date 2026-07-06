@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu.js";
 import { EmptyState } from "@/components/ui/empty-state.js";
 import { Icon, type IconName } from "@/components/ui/icon.js";
+import { LIST_HOVER_TRANSITION } from "@/components/ui/motion.js";
 import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
@@ -95,9 +96,10 @@ import { SidebarFolderRow } from "./SidebarFolderRow";
 import { sidebarCollapsedFoldersAtom } from "./sidebarCollapsedAtoms";
 import {
   SIDEBAR_PROJECT_GROUP_LINE_CLASS,
+  SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
-  SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   SIDEBAR_ROW_SELECTED_STATE_CLASS,
+  SIDEBAR_ROW_STATIC_STATE_CLASS,
   getSidebarThreadGroupLineLeft,
   getSidebarThreadRowPaddingLeft,
 } from "./sidebarRowClasses";
@@ -1049,11 +1051,10 @@ function EnvironmentThreadGroupHeaderActions({
             variant="ghost"
             size="icon"
             aria-label="Worktree actions"
-            title={undefined}
             className={cn(
               "rounded-md p-0 text-muted-foreground",
               "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-foreground",
-              COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+              SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
             )}
           >
             <Icon
@@ -1120,8 +1121,8 @@ function EnvironmentThreadGroupHeader({
   const displayName = environmentName || branchName || "Worktree";
   const iconName: IconName = "FolderGit";
   // Collapsed: the header speaks for its hidden children through one status
-  // glyph (pending > working > unread). Expanded: the children show their own
-  // glyphs, and the synthetic header has no status of its own.
+  // glyph. Expanded: the children show their own glyphs, and the synthetic
+  // header has no status of its own.
   const showRollupGlyph =
     isCollapsed &&
     (childActivity.pending || childActivity.working || childActivity.unread);
@@ -1134,7 +1135,6 @@ function EnvironmentThreadGroupHeader({
     stickyLevel === undefined && "relative",
     SIDEBAR_ROW_BASE_CLASS,
     COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS,
-    "cursor-default",
   );
   const style = {
     paddingLeft: getSidebarThreadRowPaddingLeft(rowDepth),
@@ -1165,8 +1165,6 @@ function EnvironmentThreadGroupHeader({
           isCollapsed={isCollapsed}
           expandLabel={`Expand ${displayName} threads`}
           collapseLabel={`Collapse ${displayName} threads`}
-          expandTitle="Expand worktree threads"
-          collapseTitle="Collapse worktree threads"
           onToggle={() => onToggleCollapsed(environmentId)}
           revealOnHover
         />
@@ -1188,9 +1186,7 @@ function EnvironmentThreadGroupHeader({
             <ThreadStatusGlyph
               hasPendingInteraction={childActivity.pending}
               isBusy={childActivity.runtimeWorking}
-              isWorkflowActive={
-                !childActivity.runtimeWorking && childActivity.workflow
-              }
+              isWorkflowActive={childActivity.workflow}
               showUnreadBadge={childActivity.unread}
               unreadBadgeTone={childActivity.unreadError ? "error" : "default"}
             />
@@ -1715,7 +1711,7 @@ interface ManualThreadTreeItemsProps {
 }
 
 // The one place that maps thread-tree items to rows. Every sidebar view
-// (project, flat chronological, folders) renders through this, so a row-prop
+// (project, chronological, folders) renders through this, so a row-prop
 // change lands once instead of being copied across each view's renderer.
 function ManualThreadTreeItems({
   items,
@@ -1855,11 +1851,10 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
   );
 });
 
-// Flat Folders bucket: one top-level row per non-pinned thread across all
-// projects, globally ordered by the chosen comparator before folder bucketing.
-// It intentionally drops parent/child nesting and worktree grouping so nothing
-// hides behind a collapsed parent. Derives projectId per row from its own
-// thread so cross-project rows still route correctly.
+// Folders bucket: root threads across all projects, globally ordered by the
+// chosen comparator before folder bucketing, with descendants nested under
+// their parent. Worktree grouping stays off. Derives projectId per row from its
+// own thread so cross-project rows still route correctly.
 export const ChronologicalThreadTree = memo(function ChronologicalThreadTree({
   threadListState,
   compareThreads,
@@ -2130,22 +2125,23 @@ function ProjectRowComponent({
             tier="project"
             className={cn(
               SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
-              "group/project-row flex w-full items-center rounded-md text-sm transition-colors",
+              "group/project-row flex w-full items-center rounded-md text-sm",
+              LIST_HOVER_TRANSITION,
               isActive
                 ? SIDEBAR_ROW_SELECTED_STATE_CLASS
-                : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
+                : SIDEBAR_ROW_STATIC_STATE_CLASS,
               projectDragBindings &&
                 !projectDragBindings.disabled &&
                 "select-none",
             )}
-            title={project.name}
             {...projectDragBindings?.attributes}
             {...(projectDragBindings?.listeners ?? {})}
           >
             <span
               className={cn(
-                "pointer-events-none relative z-10 flex shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors group-hover/project-row:text-sidebar-foreground",
+                "pointer-events-none relative z-10 flex shrink-0 items-center justify-center rounded-md text-muted-foreground",
                 PROJECT_ROW_LEADING_SLOT_CLASS,
+                LIST_HOVER_TRANSITION,
               )}
               aria-hidden
             >
@@ -2155,13 +2151,13 @@ function ProjectRowComponent({
               />
             </span>
             <span className="pointer-events-none relative z-10 flex min-w-0 flex-1 items-center gap-1.5 text-left">
-              <span className="min-w-0 truncate">{project.name}</span>
+              <span className="min-w-0 truncate" title={project.name}>
+                {project.name}
+              </span>
               <SidebarChildToggleChevron
                 isCollapsed={isCollapsed}
                 expandLabel={`Expand ${project.name}`}
                 collapseLabel={`Collapse ${project.name}`}
-                expandTitle="Expand project threads"
-                collapseTitle="Collapse project threads"
                 onToggle={handleProjectRowToggle}
                 revealOnHover
               />
@@ -2173,7 +2169,6 @@ function ProjectRowComponent({
                   event.stopPropagation();
                   onProjectSelect?.();
                 }}
-                title="Project folder not found. Open project settings to fix."
                 aria-label="Project folder not found"
                 className={cn(
                   "relative z-10 inline-flex shrink-0 items-center justify-center rounded-md text-destructive outline-none ring-sidebar-ring transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2",
@@ -2204,7 +2199,7 @@ function ProjectRowComponent({
                 onOpenChange={setIsDropdownActionsOpen}
                 triggerClassName={cn(
                   "relative z-10 text-subtle-foreground hover:bg-transparent hover:text-foreground",
-                  COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+                  SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
                 )}
               />
               <Button
@@ -2212,7 +2207,6 @@ function ProjectRowComponent({
                 variant="ghost"
                 size="icon"
                 aria-label={`New thread in ${project.name}`}
-                title="New thread"
                 disabled={!onCreateProjectThread}
                 onClick={(event) => {
                   event.stopPropagation();

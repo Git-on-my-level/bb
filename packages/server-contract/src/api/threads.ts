@@ -28,7 +28,7 @@ import {
   timelineWorkflowWorkRowSchema,
 } from "../thread-timeline.js";
 import {
-  environmentArgsSchema,
+  createThreadEnvironmentArgsSchema,
   FILE_LIST_QUERY_MAX_LENGTH,
   isCommaSeparatedIncludeQueryValue,
   pathListIncludeQueryValueSchema,
@@ -52,6 +52,7 @@ export const threadCreateOriginSchema = z.enum([
   "cli",
   "automation",
   "sdk",
+  "plugin",
 ]);
 export type ThreadCreateOrigin = z.infer<typeof threadCreateOriginSchema>;
 
@@ -105,6 +106,11 @@ export const createThreadRequestSchema = z
     projectId: z.string().min(1),
     providerId: z.string().min(1).optional(),
     origin: threadCreateOriginSchema,
+    /**
+     * Id of the plugin that spawned this thread. Present exactly when
+     * origin is "plugin" (enforced below); persisted for attribution.
+     */
+    originPluginId: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
     // A source-derived side-chat preload may establish the cloned provider
     // session without a first prompt. Normal starts and forks require at least
@@ -116,7 +122,7 @@ export const createThreadRequestSchema = z
     reasoningLevel: reasoningLevelSchema.optional(),
     permissionMode: permissionModeSchema.optional(),
     executionInputSources: createExecutionInputSourcesSchema.optional(),
-    environment: environmentArgsSchema,
+    environment: createThreadEnvironmentArgsSchema,
     parentThreadId: z.string().min(1).optional(),
     folderId: z.string().min(1).nullable().optional(),
     sourceThreadId: z.string().min(1).optional(),
@@ -127,6 +133,20 @@ export const createThreadRequestSchema = z
     childOrigin: threadChildOriginSchema.nullable().default(null),
   })
   .superRefine((value, ctx) => {
+    if (value.origin === "plugin" && value.originPluginId === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: 'originPluginId is required when origin is "plugin"',
+        path: ["originPluginId"],
+      });
+    }
+    if (value.origin !== "plugin" && value.originPluginId !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: 'originPluginId requires origin "plugin"',
+        path: ["originPluginId"],
+      });
+    }
     const originKind = value.originKind ?? value.childOrigin;
     if (originKind === null && value.input.length === 0) {
       ctx.addIssue({
@@ -233,6 +253,9 @@ export const threadSearchMatchSchema = z
     sourceKind: threadSearchSourceKindSchema,
     text: z.string(),
     highlightRanges: z.array(threadSearchHighlightRangeSchema),
+    // Event sequence of the message this match came from, so the UI can deep-link
+    // to it in the conversation. Null for title/title_fallback matches.
+    sourceSeq: z.number().int().nonnegative().nullable(),
   })
   .strict();
 export type ThreadSearchMatch = z.infer<typeof threadSearchMatchSchema>;
@@ -618,6 +641,54 @@ export const threadTimelineResponseSchema = z.object({
 });
 export type ThreadTimelineResponse = z.infer<
   typeof threadTimelineResponseSchema
+>;
+
+/**
+ * Lightweight attachment counts for a conversation-outline item. The full
+ * {@link timelineConversationAttachmentsSchema} carries image URLs and file
+ * paths the outline never renders, so the outline ships only the counts the
+ * minimap needs to label an attachment-only message.
+ */
+export const threadConversationOutlineAttachmentSummarySchema = z
+  .object({
+    imageCount: z.number().int().nonnegative(),
+    fileCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ThreadConversationOutlineAttachmentSummary = z.infer<
+  typeof threadConversationOutlineAttachmentSummarySchema
+>;
+
+/**
+ * A single conversation message in the thread's full table-of-contents
+ * outline. `id` matches the corresponding timeline row id (both are projected
+ * by the same builder), so the minimap can scroll-spy and jump to a row once
+ * it is paginated into the loaded window. `preview` is already whitespace-
+ * normalized and length-clamped server-side to keep the payload small for
+ * very long threads.
+ */
+export const threadConversationOutlineItemSchema = z
+  .object({
+    id: z.string().min(1),
+    role: z.enum(["user", "assistant"]),
+    preview: z.string(),
+    attachmentSummary:
+      threadConversationOutlineAttachmentSummarySchema.nullable(),
+  })
+  .strict();
+export type ThreadConversationOutlineItem = z.infer<
+  typeof threadConversationOutlineItemSchema
+>;
+
+export const threadConversationOutlineResponseSchema = z
+  .object({
+    items: z.array(threadConversationOutlineItemSchema),
+    /** Thread high-water event sequence this outline reflects. */
+    maxSeq: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ThreadConversationOutlineResponse = z.infer<
+  typeof threadConversationOutlineResponseSchema
 >;
 
 export const threadStorageFileListResponseSchema =

@@ -124,6 +124,7 @@ interface BuildDetailedProjectionArgs {
   activeThinking: ActiveThinking | null;
   activeWorkflow: EventProjectionWorkflowMessage | null;
   activeBackgroundCommands: EventProjectionWorkflowMessage[];
+  contextOnlyToolCallIds?: ReadonlySet<string>;
   events: ThreadEventWithMeta[];
   messages: EventProjectionMessage[];
   turnMessageDetail: BuildEventProjectionOptions["turnMessageDetail"];
@@ -146,8 +147,8 @@ function selectActiveWorkflowMessage(
   for (const message of messages) {
     if (
       message.kind !== "workflow" ||
-      // The prompt-box active banner is workflow-only; backgrounded shell
-      // commands surface inline in the timeline, not in the banner.
+      // The prompt-box active workflow banner is workflow-only; non-workflow
+      // background tasks use the separate background-activity card.
       message.taskType !== LOCAL_WORKFLOW_TASK_TYPE ||
       message.status !== "pending" ||
       message.skipTranscript
@@ -164,19 +165,74 @@ function selectActiveWorkflowMessage(
   return best;
 }
 
+type EventProjectionCallMessage = Extract<
+  EventProjectionMessage,
+  { callId: string }
+>;
+
+function isEventProjectionCallMessage(
+  message: EventProjectionMessage,
+): message is EventProjectionCallMessage {
+  switch (message.kind) {
+    case "command":
+    case "delegation":
+    case "file-edit":
+    case "image-view":
+    case "tool-call":
+    case "web-fetch":
+    case "web-search":
+      return true;
+    case "assistant-text":
+    case "debug/raw-event":
+    case "error":
+    case "operation":
+    case "permission-grant-lifecycle":
+    case "user":
+    case "user-question-lifecycle":
+    case "workflow":
+      return false;
+  }
+}
+
+function buildCallMessageById(
+  messages: readonly EventProjectionMessage[],
+): ReadonlyMap<string, EventProjectionCallMessage> {
+  const byId = new Map<string, EventProjectionCallMessage>();
+  for (const message of messages) {
+    if (!isEventProjectionCallMessage(message)) {
+      continue;
+    }
+    byId.set(message.callId, message);
+  }
+  return byId;
+}
+
+function isDirectBackgroundTaskForCurrentAgent(
+  message: EventProjectionWorkflowMessage,
+  callMessageById: ReadonlyMap<string, EventProjectionCallMessage>,
+): boolean {
+  if (!message.parentToolCallId) {
+    return true;
+  }
+  const spawningCall = callMessageById.get(message.parentToolCallId);
+  return spawningCall ? spawningCall.parentToolCallId === undefined : true;
+}
+
 function selectActiveBackgroundCommandMessages(
   messages: readonly EventProjectionMessage[],
 ): EventProjectionWorkflowMessage[] {
-  // Running backgrounded shell commands, most recently started first. Feeds the
-  // background-commands prompt-box card, which is independent of the
-  // workflow-only banner driven by selectActiveWorkflowMessage.
+  // Running non-workflow background tasks, most recently started first. Feeds
+  // the background-activity prompt-box card, independent of the workflow-only
+  // banner driven by selectActiveWorkflowMessage.
+  const callMessageById = buildCallMessageById(messages);
   const running: EventProjectionWorkflowMessage[] = [];
   for (const message of messages) {
     if (
       message.kind !== "workflow" ||
       message.taskType === LOCAL_WORKFLOW_TASK_TYPE ||
       message.status !== "pending" ||
-      message.skipTranscript
+      message.skipTranscript ||
+      !isDirectBackgroundTaskForCurrentAgent(message, callMessageById)
     ) {
       continue;
     }
@@ -392,6 +448,30 @@ function consumePendingDelegationTurnLink(
   return undefined;
 }
 
+function shouldUseExplicitEventParentToolCallId({
+  eventTurnId,
+  isAcceptedRootClientTurn,
+  parentToolCallId,
+  state,
+}: {
+  eventTurnId: string | undefined;
+  isAcceptedRootClientTurn: boolean;
+  parentToolCallId: string | undefined;
+  state: ProjectionState;
+}): boolean {
+  if (!parentToolCallId) {
+    return false;
+  }
+  if (!isAcceptedRootClientTurn) {
+    return true;
+  }
+  return (
+    typeof eventTurnId !== "string" ||
+    state.suppressedAcceptedRootParentToolCallIdsByTurnId.get(eventTurnId) !==
+      parentToolCallId
+  );
+}
+
 function getCompactionTurnFinalization(
   decoded: ThreadEvent,
 ): CompactionTurnFinalization | undefined {
@@ -443,9 +523,26 @@ function buildFlatProjectionData(
     const isAcceptedRootClientTurn =
       typeof eventTurnId === "string" &&
       acceptedRootClientTurnIds.has(eventTurnId);
-    const explicitEventParentToolCallId = isAcceptedRootClientTurn
-      ? undefined
-      : getEventParentToolCallId(decoded);
+    const decodedEventParentToolCallId = getEventParentToolCallId(decoded);
+    if (
+      decoded.type === "turn/started" &&
+      isAcceptedRootClientTurn &&
+      decodedEventParentToolCallId
+    ) {
+      state.suppressedAcceptedRootParentToolCallIdsByTurnId.set(
+        eventTurnId,
+        decodedEventParentToolCallId,
+      );
+    }
+    const explicitEventParentToolCallId =
+      shouldUseExplicitEventParentToolCallId({
+        eventTurnId,
+        isAcceptedRootClientTurn,
+        parentToolCallId: decodedEventParentToolCallId,
+        state,
+      })
+        ? decodedEventParentToolCallId
+        : undefined;
 
     if (decoded.type === "turn/started") {
       const turnId = requireThreadEventScopeTurnId({
@@ -476,7 +573,7 @@ function buildFlatProjectionData(
     }
 
     const eventParentToolCallId = isAcceptedRootClientTurn
-      ? undefined
+      ? explicitEventParentToolCallId
       : (explicitEventParentToolCallId ??
         (eventTurnId
           ? state.delegationParentToolCallIdsByTurnId.get(eventTurnId)
@@ -628,6 +725,12 @@ function buildFlatProjectionData(
       const toolCallReceiverThreadIds = getToolCallReceiverThreadIds(decoded);
       const toolCallSenderThreadId = getToolCallSenderThreadId(decoded);
       if (toolCallEvent.kind !== "output") {
+        if (toolCallEvent.call.kind === "delegation" && eventTurnId) {
+          state.delegationTurnIdsByCallId.set(
+            toolCallEvent.call.callId,
+            eventTurnId,
+          );
+        }
         if (
           !toolCallEvent.call.parentToolCallId &&
           toolCallName &&
@@ -848,6 +951,8 @@ function buildDetailedProjection(
       activeWorkflow: args.activeWorkflow,
       activeBackgroundCommands: args.activeBackgroundCommands,
     },
+  }, {
+    contextOnlyToolCallIds: args.contextOnlyToolCallIds,
   });
   return applyProjectionTurnMessageDetail(
     semanticProjection,
@@ -871,6 +976,7 @@ function buildFullEventProjection(
     activeThinking: flatProjection.activeThinking,
     activeWorkflow: flatProjection.activeWorkflow,
     activeBackgroundCommands: flatProjection.activeBackgroundCommands,
+    contextOnlyToolCallIds: options.contextOnlyToolCallIds,
     events,
     messages: flatProjection.messages,
     turnMessageDetail: options.turnMessageDetail,
@@ -905,6 +1011,7 @@ export function buildEventProjectionEntries(
     activeThinking: null,
     activeWorkflow: flatProjection.activeWorkflow,
     activeBackgroundCommands: flatProjection.activeBackgroundCommands,
+    contextOnlyToolCallIds: options.contextOnlyToolCallIds,
     events: orderedEvents,
     messages: flatProjection.messages,
     turnMessageDetail: options.turnMessageDetail,

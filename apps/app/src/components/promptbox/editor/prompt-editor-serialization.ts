@@ -6,7 +6,7 @@ import {
   type PromptTextMention,
 } from "@bb/domain";
 import type { JSONContent } from "@tiptap/react";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { Node as ProseMirrorNode, Schema, Slice } from "@tiptap/pm/model";
 import type {
   PromptMentionSuggestion,
   ProviderCommandSuggestion,
@@ -473,6 +473,28 @@ export function promptEditorValueFromDoc(
   return { text, mentions };
 }
 
+export function promptEditorValueFromSlice(
+  slice: Slice,
+  schema: Schema,
+): PromptEditorValue {
+  const doc = schema.topNodeType.createAndFill(null, slice.content);
+  if (doc) {
+    return promptEditorValueFromDoc(doc);
+  }
+
+  return {
+    text: slice.content.textBetween(0, slice.content.size, "\n"),
+    mentions: [],
+  };
+}
+
+export function promptEditorClipboardTextFromSlice(
+  slice: Slice,
+  schema: Schema,
+): string {
+  return promptEditorValueFromSlice(slice, schema).text;
+}
+
 export function promptMentionResourceFromSuggestion(
   suggestion: PromptMentionSuggestion,
 ): PromptMentionResource {
@@ -482,6 +504,23 @@ export function promptMentionResourceFromSuggestion(
       threadId: suggestion.threadId,
       projectId: suggestion.projectId,
       label: suggestion.title?.trim() || suggestion.threadId,
+    };
+  }
+
+  if (suggestion.kind === "project") {
+    return {
+      kind: "project",
+      projectId: suggestion.projectId,
+      label: suggestion.name.trim() || suggestion.projectId,
+    };
+  }
+
+  if (suggestion.kind === "plugin") {
+    return {
+      kind: "plugin",
+      pluginId: suggestion.pluginId,
+      itemId: suggestion.itemId,
+      label: suggestion.title.trim() || suggestion.itemId,
     };
   }
 

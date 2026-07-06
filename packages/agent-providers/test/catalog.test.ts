@@ -95,6 +95,7 @@ describe("agent provider catalog", () => {
     expect(isAcpAgentProviderId("codex")).toBe(false);
     expect(isAcpAgentProviderId("claude-code")).toBe(false);
     expect(isAcpAgentProviderId("pi")).toBe(false);
+    expect(isAcpAgentProviderId("omp")).toBe(false);
 
     expect(isAcpProviderId("acp-cursor")).toBe(true);
     expect(isAcpProviderId("acp-my-agent")).toBe(true);

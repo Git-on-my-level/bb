@@ -33,6 +33,8 @@ interface ThreadDetailHeaderProps {
   isSecondaryPanelOpen: boolean;
   onOpenThreadGitAction: (target: ThreadGitActionDialogTarget) => void;
   onToggleSecondaryPanel: () => void;
+  /** Plugin-contributed thread action buttons (design §4.9); optional. */
+  pluginActions?: ReactNode;
   threadHeaderGitActions: ThreadHeaderGitAction[];
   threadTitle: string;
   workspaceOpenButton?: ReactNode;
@@ -45,6 +47,7 @@ export function ThreadDetailHeader({
   isSecondaryPanelOpen,
   onOpenThreadGitAction,
   onToggleSecondaryPanel,
+  pluginActions,
   threadHeaderGitActions,
   threadTitle,
   workspaceOpenButton,
@@ -57,11 +60,15 @@ export function ThreadDetailHeader({
     ? "Hide right panel"
     : "Show right panel";
   const rightPanelIconName = renderAsDrawer ? "PanelBottom" : "PanelRight";
-  const showRightPanelToggle = renderAsDrawer || !isSecondaryPanelOpen;
+  // The header is a full-width bar, so the toggle holds a stable position at the
+  // window edge — keep it mounted across open/close on wide layouts (the panel no
+  // longer renders its own inline hide control). The drawer still hides it while
+  // open, since the drawer carries its own close affordance.
+  const showRightPanelToggle = !renderAsDrawer || !isSecondaryPanelOpen;
 
   const center = (
     <>
-      <p className="min-w-0 truncate text-sm font-semibold">{threadTitle}</p>
+      <p className="min-w-0 truncate text-sm font-medium">{threadTitle}</p>
       {childPillLabel ? (
         <Pill variant="outline" size="sm">
           {childPillLabel}
@@ -91,6 +98,7 @@ export function ThreadDetailHeader({
 
   const actions = (
     <>
+      {pluginActions}
       {workspaceOpenButton}
       {primaryAction && secondaryActions.length > 0 ? (
         <SplitButton
@@ -122,7 +130,6 @@ export function ThreadDetailHeader({
           className={`${HEADER_ICON_BUTTON_CLASS} relative`}
           aria-label={rightPanelLabel}
           aria-pressed={isSecondaryPanelOpen}
-          title={rightPanelLabel}
           onClick={onToggleSecondaryPanel}
         >
           <Icon name={rightPanelIconName} />
@@ -139,15 +146,14 @@ export function ThreadDetailHeader({
     </>
   );
 
-  // Use the stronger vertical-pane seam (not the quieter horizontal `border-seam`)
-  // so the chat header's bottom edge matches the chat/panel side borders. Pass
-  // `bordered={false}` to drop the default seam, then add the vertical one.
+  // Keep the thread header seam in the vertical-pane family, but soften it so
+  // the top nav does not compete with the title and controls.
   return (
     <AppPageHeader
       center={center}
       actions={actions}
       bordered={false}
-      className="border-b border-border-seam-vertical"
+      className="border-b border-border-seam-vertical/60"
     />
   );
 }

@@ -8,16 +8,20 @@ import type {
 import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";
 import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
 import * as api from "@/lib/api";
-import { fetchProviderCliStatus } from "@/lib/api-host-daemon";
 import { useSystemRealtimeSubscription } from "@/hooks/useRealtimeSubscription";
 import {
-  localProviderCliStatusQueryKey,
+  hostProviderCliStatusQueryKey,
   systemConfigQueryKey,
   systemExecutionOptionsQueryKey,
   systemUsageLimitsQueryKey,
   systemVersionQueryKey,
 } from "./query-keys";
 import { requireEnabledQueryArg } from "./query-helpers";
+import {
+  FOCUS_OWNED_LIVE_QUERY_POLICY,
+  SERVER_SESSION_QUERY_POLICY,
+  SESSION_STATIC_QUERY_POLICY,
+} from "./query-policies";
 
 export interface UseSystemExecutionOptionsArgs {
   enabled?: boolean;
@@ -92,56 +96,45 @@ export function useSystemConfig(options?: QueryOptions) {
   });
 }
 
-const SYSTEM_VERSION_STALE_TIME_MS = 60 * 60 * 1000;
-
 export function useSystemVersion(options?: QueryOptions) {
   return useQuery<SystemVersionResponse>({
     queryKey: systemVersionQueryKey(),
     queryFn: ({ signal }) => api.getSystemVersion(signal),
     enabled: options?.enabled ?? true,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-    staleTime: SYSTEM_VERSION_STALE_TIME_MS,
+    ...SERVER_SESSION_QUERY_POLICY,
   });
 }
 
-export interface UseLocalProviderCliStatusArgs {
-  daemonPort: number | null;
+export interface UseHostProviderCliStatusArgs {
+  hostId: string | null;
   enabled?: boolean;
 }
 
-export function useLocalProviderCliStatus({
-  daemonPort,
+export function useHostProviderCliStatus({
+  hostId,
   enabled,
-}: UseLocalProviderCliStatusArgs) {
+}: UseHostProviderCliStatusArgs) {
   return useQuery<ProviderCliStatusResponse>({
-    queryKey: localProviderCliStatusQueryKey(daemonPort),
+    queryKey: hostProviderCliStatusQueryKey(hostId),
     queryFn: ({ signal }) =>
-      fetchProviderCliStatus(
+      api.fetchHostProviderCliStatus(
         requireEnabledQueryArg({
-          value: daemonPort,
-          hookName: "useLocalProviderCliStatus",
-          argName: "daemonPort",
+          value: hostId,
+          hookName: "useHostProviderCliStatus",
+          argName: "hostId",
         }),
         signal,
       ),
-    enabled: (enabled ?? true) && daemonPort !== null,
-    refetchOnMount: false,
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
+    enabled: (enabled ?? true) && hostId !== null,
+    ...SESSION_STATIC_QUERY_POLICY,
   });
 }
-
-const PROVIDER_USAGE_STALE_TIME_MS = 30_000;
 
 export function useSystemUsageLimits(options?: QueryOptions) {
   return useQuery<ProviderUsageResponse>({
     queryKey: systemUsageLimitsQueryKey(),
     queryFn: ({ signal }) => api.getSystemUsageLimits(signal),
     enabled: options?.enabled ?? true,
-    refetchOnReconnect: false,
-    refetchOnWindowFocus: false,
-    staleTime: PROVIDER_USAGE_STALE_TIME_MS,
+    ...FOCUS_OWNED_LIVE_QUERY_POLICY,
   });
 }

@@ -27,6 +27,7 @@ import {
 import {
   type TimelineRow,
   threadComposerBootstrapResponseSchema,
+  threadConversationOutlineResponseSchema,
   threadQueuedMessageListResponseSchema,
   threadTimelineResponseSchema,
   threadWithIncludesResponseSchema,
@@ -36,6 +37,7 @@ import {
 import { renderTemplate } from "@bb/templates";
 import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
+import type { TelemetryService } from "../../src/services/system/telemetry.js";
 import { loadActiveThreadProvisionContext } from "../../src/services/threads/thread-provisioning-environment.js";
 import {
   reportQueuedCommandError,
@@ -225,6 +227,223 @@ describe("public thread data routes", () => {
           ]),
         }),
       );
+    });
+  });
+
+  it("returns the full conversation outline beyond the paginated timeline window", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+
+      // Three message turns, each: user request -> turn start -> assistant
+      // message -> turn complete. Segment anchors are the user-message rows, so
+      // a `segmentLimit=1` timeline page exposes only the last turn while the
+      // outline must still cover all three.
+      const seedMessageTurn = (args: {
+        requestId: number;
+        startSequence: number;
+        text: string;
+        turnId: string;
+      }) => {
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          sequence: args.startSequence,
+          type: "client/turn/requested",
+          scope: threadScope(),
+          data: {
+            direction: "outbound",
+            requestId: encodeClientTurnRequestIdNumber({
+              value: args.requestId,
+            }),
+            input: [{ type: "text", text: args.text }],
+            target: { kind: "new-turn" },
+            execution: {
+              model: "gpt-5",
+              reasoningLevel: "medium",
+              permissionMode: "full",
+              serviceTier: "default",
+              source: "client/turn/requested",
+            },
+            initiator: "user",
+            senderThreadId: null,
+            request: { method: "turn/start", params: {} },
+            source: "tell",
+          },
+        });
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          providerThreadId: "provider-thread-1",
+          scope: turnScope(args.turnId),
+          sequence: args.startSequence + 1,
+          type: "turn/started",
+          data: {},
+        });
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          providerThreadId: "provider-thread-1",
+          scope: turnScope(args.turnId),
+          sequence: args.startSequence + 2,
+          type: "item/completed",
+          data: {
+            item: {
+              type: "agentMessage",
+              id: `${args.turnId}-assistant`,
+              text: `${args.text} — answered.`,
+            },
+          },
+        });
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: environment.id,
+          providerThreadId: "provider-thread-1",
+          scope: turnScope(args.turnId),
+          sequence: args.startSequence + 3,
+          type: "turn/completed",
+          data: { status: "completed" },
+        });
+      };
+
+      seedMessageTurn({
+        requestId: 101,
+        startSequence: 1,
+        text: "First question",
+        turnId: "turn-1",
+      });
+      seedMessageTurn({
+        requestId: 102,
+        startSequence: 5,
+        text: "Second question",
+        turnId: "turn-2",
+      });
+      seedMessageTurn({
+        requestId: 103,
+        startSequence: 9,
+        text: "Third question",
+        turnId: "turn-3",
+      });
+
+      // A single-segment timeline page only holds the last turn.
+      const timelineResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline?segmentLimit=1`,
+      );
+      expect(timelineResponse.status).toBe(200);
+      const timeline = threadTimelineResponseSchema.parse(
+        await readJson(timelineResponse),
+      );
+      expect(timeline.timelinePage.hasOlderRows).toBe(true);
+      const windowedConversationIds = timeline.rows
+        .filter((row) => row.kind === "conversation")
+        .map((row) => row.id);
+
+      const outlineResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/conversation-outline`,
+      );
+      expect(outlineResponse.status).toBe(200);
+      const outline = threadConversationOutlineResponseSchema.parse(
+        await readJson(outlineResponse),
+      );
+
+      // The outline covers every message in the thread, not just the page.
+      expect(outline.items.filter((item) => item.role === "user")).toHaveLength(
+        3,
+      );
+      expect(
+        outline.items.filter((item) => item.role === "assistant"),
+      ).toHaveLength(3);
+      expect(outline.items.length).toBeGreaterThan(
+        windowedConversationIds.length,
+      );
+      expect(outline.maxSeq).toBe(12);
+      expect(outline.items.map((item) => item.preview)).toEqual([
+        "First question",
+        "First question — answered.",
+        "Second question",
+        "Second question — answered.",
+        "Third question",
+        "Third question — answered.",
+      ]);
+
+      // Ids must match the timeline exactly so the minimap can scroll-spy the
+      // loaded window and jump to any row once it is paginated in.
+      const outlineIds = new Set(outline.items.map((item) => item.id));
+      for (const id of windowedConversationIds) {
+        expect(outlineIds.has(id)).toBe(true);
+      }
+    });
+  });
+
+  it("returns an empty conversation outline for a thread with no events", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/conversation-outline`,
+      );
+      expect(response.status).toBe(200);
+      await expect(readJson(response)).resolves.toEqual({
+        items: [],
+        maxSeq: 0,
+      });
+    });
+  });
+
+  it("summarizes attachment-only messages in the conversation outline", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+
+      // A user message with no text but a file attachment: the outline should
+      // emit an empty preview plus attachment counts (and never leak the path).
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        sequence: 1,
+        type: "client/turn/requested",
+        scope: threadScope(),
+        data: {
+          direction: "outbound",
+          requestId: encodeClientTurnRequestIdNumber({ value: 501 }),
+          input: [
+            { type: "text", text: "" },
+            {
+              type: "localFile",
+              path: "/tmp/secret-attachment-project/report.pdf",
+              name: "report.pdf",
+              sizeBytes: 12,
+            },
+          ],
+          target: { kind: "new-turn" },
+          execution: {
+            model: "gpt-5",
+            reasoningLevel: "medium",
+            permissionMode: "full",
+            serviceTier: "default",
+            source: "client/turn/requested",
+          },
+          initiator: "user",
+          senderThreadId: null,
+          request: { method: "turn/start", params: {} },
+          source: "tell",
+        },
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/conversation-outline`,
+      );
+      expect(response.status).toBe(200);
+      const outline = threadConversationOutlineResponseSchema.parse(
+        await readJson(response),
+      );
+      const userItem = outline.items.find((item) => item.role === "user");
+      expect(userItem).toBeDefined();
+      expect(userItem?.preview).toBe("");
+      expect(userItem?.attachmentSummary).toEqual({
+        imageCount: 0,
+        fileCount: 1,
+      });
+      // The slim summary must not carry the on-disk path.
+      expect(JSON.stringify(outline)).not.toContain("report.pdf");
     });
   });
 
@@ -931,6 +1150,150 @@ describe("public thread data routes", () => {
     });
   });
 
+  it("hydrates parent turn-summary details with delegated child rows", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      const providerThreadId = "provider-thread-1";
+
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("parent-turn"),
+        sequence: 1,
+        type: "turn/started",
+        data: {},
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("parent-turn"),
+        sequence: 2,
+        type: "item/started",
+        data: {
+          item: {
+            type: "toolCall",
+            id: "agent-call",
+            tool: "Agent",
+            arguments: {
+              description: "Map old Telegram integration",
+              subagent_type: "general-purpose",
+              prompt: "Map the old Telegram integration.",
+            },
+            status: "pending",
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("parent-turn"),
+        sequence: 3,
+        type: "item/completed",
+        data: {
+          item: {
+            type: "toolCall",
+            id: "agent-call",
+            tool: "Agent",
+            arguments: {
+              description: "Map old Telegram integration",
+              subagent_type: "general-purpose",
+              prompt: "Map the old Telegram integration.",
+            },
+            status: "completed",
+            result: "Async agent launched successfully.",
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("parent-turn"),
+        sequence: 4,
+        type: "turn/completed",
+        data: { status: "completed" },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("child-turn"),
+        sequence: 5,
+        type: "turn/started",
+        data: {},
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("child-turn"),
+        sequence: 6,
+        type: "item/completed",
+        data: {
+          item: {
+            type: "agentMessage",
+            id: "child-message",
+            text: "Child mapped the Telegram integration.",
+            parentToolCallId: "agent-call",
+          },
+        },
+      });
+      seedEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        providerThreadId,
+        scope: turnScope("child-turn"),
+        sequence: 7,
+        type: "turn/completed",
+        data: { status: "completed" },
+      });
+
+      const timelineResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline`,
+      );
+      expect(timelineResponse.status).toBe(200);
+      const timeline = threadTimelineResponseSchema.parse(
+        await readJson(timelineResponse),
+      );
+      const parentTurnRow = timeline.rows.find(
+        (row): row is TimelineTurnRow =>
+          row.kind === "turn" && row.turnId === "parent-turn",
+      );
+      expect(parentTurnRow).toBeDefined();
+      if (!parentTurnRow) {
+        throw new Error("Expected parent turn row");
+      }
+
+      const detailsResponse = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${parentTurnRow.turnId}&sourceSeqStart=${parentTurnRow.sourceSeqStart}&sourceSeqEnd=${parentTurnRow.sourceSeqEnd}`,
+      );
+      expect(detailsResponse.status).toBe(200);
+      const details = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(detailsResponse),
+      );
+      const delegation = details.rows.find(
+        (
+          row,
+        ): row is Extract<
+          TimelineRow,
+          { kind: "work"; workKind: "delegation" }
+        > => row.kind === "work" && row.workKind === "delegation",
+      );
+
+      expect(delegation).toBeDefined();
+      expect(delegation?.callId).toBe("agent-call");
+      expect(delegation?.childRows).toContainEqual(
+        expect.objectContaining({
+          kind: "conversation",
+          text: "Child mapped the Telegram integration.",
+        }),
+      );
+    });
+  });
+
   it("hydrates turn-summary details with future accepted input context", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedThreadFixture(harness);
@@ -1588,6 +1951,8 @@ describe("public thread data routes", () => {
 
   it("creates and deletes thread queued messages", async () => {
     await withTestHarness(async (harness) => {
+      const capture = vi.fn<TelemetryService["capture"]>();
+      harness.deps.telemetry = { capture };
       const { environment, thread } = seedThreadFixture(harness);
       seedEvent(harness.deps, {
         threadId: thread.id,
@@ -1640,6 +2005,14 @@ describe("public thread data routes", () => {
       ).toMatchObject({
         id: queuedMessage.id,
       });
+      expect(capture).toHaveBeenCalledWith({
+        name: "user_message_sent",
+        properties: {
+          is_child_thread: false,
+          message_source: "queued_message",
+          provider: "codex",
+        },
+      });
 
       const deleteResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/queued-messages/${queuedMessage.id}`,
@@ -1655,6 +2028,8 @@ describe("public thread data routes", () => {
 
   it("queues public send requests with sender context while the target thread is active", async () => {
     await withTestHarness(async (harness) => {
+      const capture = vi.fn<TelemetryService["capture"]>();
+      harness.deps.telemetry = { capture };
       const { project, thread } = seedThreadFixture(harness, {
         thread: {
           status: "active",
@@ -1702,6 +2077,7 @@ describe("public thread data routes", () => {
           .where(eq(events.threadId, thread.id))
           .all(),
       ).toHaveLength(0);
+      expect(capture).not.toHaveBeenCalled();
     });
   });
 
@@ -2555,10 +2931,103 @@ describe("public thread data routes", () => {
       ).toEqual([
         {
           type: "known_acp_agents.status",
-          agents: [{ id: "acp-opencode", executableName: "opencode" }],
+          agents: [
+            { id: "acp-opencode", executableName: "opencode" },
+            { id: "acp-omp", executableName: "omp" },
+          ],
         },
         { type: "provider.list_models", providerId: "codex" },
       ]);
+    });
+  });
+
+  it("keeps ACP thread composer defaults when provider discovery is degraded", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-composer-acp-degraded",
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const providerResponder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (
+            request.command.type === "known_acp_agents.status" ||
+            request.command.type === "provider.list_models"
+          ) {
+            return {
+              ok: false,
+              errorCode: "command_failed",
+              errorMessage: "Runtime shutting down",
+            };
+          }
+          throw new Error(`Unexpected RPC command ${request.command.type}`);
+        },
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      upsertProjectExecutionDefaults(harness.deps.db, {
+        projectId: project.id,
+        providerId: "acp-cursor",
+        model: "composer-2.5",
+        reasoningLevel: "medium",
+        permissionMode: "readonly",
+        serviceTier: "default",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        providerId: "acp-opencode",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        inputText: "New review comments on the PR",
+        model: "zai-coding-plan/glm-5.2",
+        permissionMode: "workspace-write",
+        providerThreadId: "ses_opencode",
+        reasoningLevel: "medium",
+        threadId: thread.id,
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/composer-bootstrap`,
+      );
+
+      expect(response.status).toBe(200);
+      const bootstrap = threadComposerBootstrapResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(bootstrap.defaultExecutionOptions).toMatchObject({
+        model: "zai-coding-plan/glm-5.2",
+        permissionMode: "workspace-write",
+        reasoningLevel: "medium",
+      });
+      const { executionOptions } = bootstrap;
+      if (executionOptions === null) {
+        throw new Error(
+          "expected degraded executionOptions for an environment-backed ACP thread",
+        );
+      }
+      expect(
+        executionOptions.providers.some(
+          (provider) => provider.id === "acp-opencode",
+        ),
+      ).toBe(true);
+      expect(executionOptions.modelLoadError).toMatchObject({
+        providerId: "acp-opencode",
+      });
+      expect(
+        providerResponder.requests.map((request) => request.command.type),
+      ).toEqual(["known_acp_agents.status", "provider.list_models"]);
+      expect(providerResponder.requests[1]?.command).toMatchObject({
+        type: "provider.list_models",
+        providerId: "acp-opencode",
+      });
     });
   });
 
@@ -3551,6 +4020,7 @@ describe("public thread data routes", () => {
         contentEncoding: "base64",
         mimeType: "image/png",
         sizeBytes: pngBytes.byteLength,
+        sha256: "0".repeat(64),
       });
       const fileResponse = await filePromise;
       expect(fileResponse.status).toBe(200);
@@ -3601,6 +4071,7 @@ describe("public thread data routes", () => {
         contentEncoding: "utf8",
         mimeType: "text/html",
         sizeBytes: Buffer.byteLength(html),
+        sha256: "0".repeat(64),
       });
 
       const fileResponse = await filePromise;
@@ -3658,6 +4129,7 @@ describe("public thread data routes", () => {
         contentEncoding: "utf8",
         mimeType: "text/html",
         sizeBytes: Buffer.byteLength(html),
+        sha256: "0".repeat(64),
       });
 
       const fileResponse = await filePromise;
@@ -3709,6 +4181,7 @@ describe("public thread data routes", () => {
         contentEncoding: "utf8",
         mimeType: "text/html",
         sizeBytes: Buffer.byteLength(html),
+        sha256: "0".repeat(64),
       });
 
       const fileResponse = await filePromise;
@@ -3802,6 +4275,7 @@ describe("public thread data routes", () => {
         contentEncoding: "utf8",
         mimeType: "text/html",
         sizeBytes: 5 * 1024 * 1024 + 1,
+        sha256: "0".repeat(64),
       });
 
       const fileResponse = await filePromise;
@@ -3869,6 +4343,7 @@ describe("public thread data routes", () => {
           contentEncoding: "utf8",
           mimeType: "text/markdown",
           sizeBytes: fileBytes.byteLength,
+          sha256: "0".repeat(64),
         },
         { hostId: host.id },
       );

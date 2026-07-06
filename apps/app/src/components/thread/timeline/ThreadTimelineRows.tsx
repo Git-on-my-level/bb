@@ -9,13 +9,17 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import {
   notifyManager,
   QueryClientContext,
   type QueryCacheNotifyEvent,
   type QueryClient,
 } from "@tanstack/react-query";
-import { isBackgroundCommandTaskType } from "@bb/domain";
+import {
+  isBackgroundAgentTaskType,
+  isBackgroundCommandTaskType,
+} from "@bb/domain";
 import type {
   ThreadChildOrigin,
   ThreadRuntimeDisplayStatus,
@@ -83,6 +87,12 @@ import { AutoHeightContainer } from "../../ui/height-transition.js";
 import { Icon, type IconName } from "@/components/ui/icon.js";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body.js";
+import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse.js";
+import {
+  collectSearchedMessageAncestorRowIds,
+  readSearchMessageTarget,
+  useScrollToSearchedMessage,
+} from "./useScrollToSearchedMessage.js";
 import {
   joinSignatureParts,
   timelineRowRenderSignature,
@@ -146,6 +156,9 @@ export interface ThreadTimelineRowsProps {
   resolveMentionLink?: PromptMentionLinkResolver;
   resolveImageViewSrc?: ThreadTimelineImageViewSrcResolver;
   resolveUserAttachmentImageSrc?: UserAttachmentImageSrcResolver;
+  hasOlderTimelineRows?: boolean;
+  isLoadingOlderTimelineRows?: boolean;
+  onLoadOlderRows?: () => Promise<void> | void;
   themeType?: ThreadTimelineTheme;
   timelineRows: TimelineRow[];
   threadId?: string;
@@ -235,6 +248,9 @@ interface TimelineTurnStateContextValue {
 
 interface TimelineRowsListProps {
   compactActivityIntents: boolean;
+  hasOlderTimelineRows?: boolean;
+  isLoadingOlderTimelineRows?: boolean;
+  onLoadOlderRows?: () => Promise<void> | void;
   rows: readonly ThreadTimelineViewRow[];
   scopeActive: boolean;
   showAssistantMessageActions: boolean;
@@ -379,6 +395,9 @@ const TimelineRendererStaticContext =
   createContext<TimelineRendererStaticContextValue | null>(null);
 const TimelineTurnStateContext =
   createContext<TimelineTurnStateContextValue | null>(null);
+const EMPTY_ROW_ID_SET: ReadonlySet<string> = new Set<string>();
+const TimelineSearchExpansionContext =
+  createContext<ReadonlySet<string>>(EMPTY_ROW_ID_SET);
 const SKILL_FILE_NAME = "SKILL.md";
 
 function useTimelineRendererStaticContext(): TimelineRendererStaticContextValue {
@@ -519,6 +538,36 @@ function useStableReadonlySet(
     valuesRef.current = values;
   }
   return valuesRef.current;
+}
+
+function useTimelineSearchExpansionRowIds(
+  rows: readonly ThreadTimelineViewRow[],
+): ReadonlySet<string> {
+  const inheritedRowIds = useContext(TimelineSearchExpansionContext);
+  const { threadId } = useTimelineRendererStaticContext();
+  const location = useLocation();
+  return useMemo(() => {
+    const target = readSearchMessageTarget(location.state);
+    if (target === null) {
+      return inheritedRowIds;
+    }
+    if (
+      threadId !== undefined &&
+      target.threadId !== null &&
+      target.threadId !== threadId
+    ) {
+      return inheritedRowIds;
+    }
+    const localRowIds = collectSearchedMessageAncestorRowIds(rows, target.seq);
+    if (localRowIds.size === 0) {
+      return inheritedRowIds;
+    }
+    const combinedRowIds = new Set<string>(inheritedRowIds);
+    for (const id of localRowIds) {
+      combinedRowIds.add(id);
+    }
+    return combinedRowIds;
+  }, [inheritedRowIds, location.state, rows, threadId]);
 }
 
 function buildTurnSummaryDetailsIdentity({
@@ -920,12 +969,12 @@ function TimelineUnreadDivider({ autoScroll }: TimelineUnreadDividerProps) {
       role="separator"
       aria-label="New messages"
       className={cn(
-        "flex items-center gap-2 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-destructive-text",
+        "flex items-center gap-2 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-timeline-accent",
       )}
       data-testid="thread-unread-divider"
     >
       <span className="shrink-0">New</span>
-      <span className="h-px min-w-0 flex-1 bg-destructive" aria-hidden />
+      <span className="h-px min-w-0 flex-1 bg-timeline-accent" aria-hidden />
     </div>
   );
 }
@@ -1318,8 +1367,14 @@ function leadingIconForWorkRow(
     case "delegation":
       return "UserRoundPlus";
     case "workflow":
-      // Backgrounded shell commands reuse the workflow row but read as commands.
-      return isBackgroundCommandTaskType(row.taskType) ? "Terminal" : "ListTodo";
+      // Background tasks reuse the workflow row shape but read by task type.
+      if (isBackgroundCommandTaskType(row.taskType)) {
+        return "Terminal";
+      }
+      if (isBackgroundAgentTaskType(row.taskType)) {
+        return "UserRoundPlus";
+      }
+      return "ListTodo";
     case "approval":
       return "Lock";
     case "question":
@@ -1516,6 +1571,7 @@ function TimelineExpandableRowView({
     liveAutoExpandedRowIds,
     terminalAutoExpandedRowIds,
   } = useTimelineTurnStateContext();
+  const searchExpandedRowIds = useContext(TimelineSearchExpansionContext);
   const renderBody = useCallback(
     () => (
       <TimelineExpandableBody
@@ -1552,6 +1608,7 @@ function TimelineExpandableRowView({
         liveAutoExpandedRowIds.has(row.id) ||
         initialAutoExpandedRowIds.has(row.id)
       }
+      forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
       onTitleAction={onTitleAction}
       resolveSegmentLinkHref={resolveSegmentLinkHref}
@@ -1629,6 +1686,9 @@ function buildTimelineRowsListItems({
 
 function TimelineRowsList({
   compactActivityIntents,
+  hasOlderTimelineRows,
+  isLoadingOlderTimelineRows,
+  onLoadOlderRows,
   rows,
   scopeActive,
   showAssistantMessageActions,
@@ -1637,6 +1697,15 @@ function TimelineRowsList({
   unreadDividerAutoScroll,
   unreadDividerPlacement,
 }: TimelineRowsListProps) {
+  const { threadId } = useTimelineRendererStaticContext();
+  const searchExpandedRowIds = useTimelineSearchExpansionRowIds(rows);
+  const stableSearchExpandedRowIds =
+    useStableReadonlySet(searchExpandedRowIds);
+  useScrollToSearchedMessage(rows, threadId, {
+    hasOlderRows: hasOlderTimelineRows,
+    isLoadingOlderRows: isLoadingOlderTimelineRows,
+    onLoadOlderRows,
+  });
   const activeLatestBundleId = useMemo(
     () => findActiveLatestBundleId(rows),
     [rows],
@@ -1646,38 +1715,40 @@ function TimelineRowsList({
     [rows, unreadDividerPlacement],
   );
   return (
-    <div
-      className={cn(
-        "flex min-w-0 flex-col [&_button:not(:disabled)]:cursor-pointer",
-        timelineRowsListGapClassName(spacing),
-        className,
-      )}
-      data-timeline-row-list={spacing}
-    >
-      {items.map((item) => {
-        if (item.kind === "unread-divider") {
-          return (
-            <TimelineUnreadDivider
-              key={item.id}
-              autoScroll={unreadDividerAutoScroll}
-            />
-          );
-        }
+    <TimelineSearchExpansionContext.Provider value={stableSearchExpandedRowIds}>
+      <div
+        className={cn(
+          "flex min-w-0 flex-col [&_button:not(:disabled)]:cursor-pointer",
+          timelineRowsListGapClassName(spacing),
+          className,
+        )}
+        data-timeline-row-list={spacing}
+      >
+        {items.map((item) => {
+          if (item.kind === "unread-divider") {
+            return (
+              <TimelineUnreadDivider
+                key={item.id}
+                autoScroll={unreadDividerAutoScroll}
+              />
+            );
+          }
 
-        return (
-          <div key={item.row.id} data-timeline-row-id={item.row.id}>
-            <MemoizedTimelineRowView
-              activeLatestBundleId={activeLatestBundleId}
-              row={item.row}
-              scopeActive={scopeActive}
-              showAssistantMessageActions={showAssistantMessageActions}
-              spacing={spacing}
-              compactActivityIntents={compactActivityIntents}
-            />
-          </div>
-        );
-      })}
-    </div>
+          return (
+            <div key={item.row.id} data-timeline-row-id={item.row.id}>
+              <MemoizedTimelineRowView
+                activeLatestBundleId={activeLatestBundleId}
+                row={item.row}
+                scopeActive={scopeActive}
+                showAssistantMessageActions={showAssistantMessageActions}
+                spacing={spacing}
+                compactActivityIntents={compactActivityIntents}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </TimelineSearchExpansionContext.Provider>
   );
 }
 
@@ -1711,7 +1782,7 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
     computedAutoExpansionRowIds.terminalFrontierRowIds,
   );
   const initialAutoExpandedRowIds = useStableReadonlySet(
-    props.initialExpanded ?? new Set<string>(),
+    props.initialExpanded ?? EMPTY_ROW_ID_SET,
   );
   const projectId = props.projectId;
   const senderThreadMetadataById = useSenderThreadMetadataById({
@@ -1731,11 +1802,22 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   // `null` (only emitted by a message that previously had a selection) clears it.
   const onSelectionAddToChat = props.onSelectionAddToChat;
   const onSelectionReplyInSideChat = props.onSelectionReplyInSideChat;
+  const isPointerCoarse = usePointerCoarse();
   const hasSelectionActions =
-    onSelectionAddToChat !== undefined ||
-    onSelectionReplyInSideChat !== undefined;
+    !isPointerCoarse &&
+    (onSelectionAddToChat !== undefined ||
+      onSelectionReplyInSideChat !== undefined);
   const [activeSelection, setActiveSelection] =
     useState<MessageProseSelection | null>(null);
+  useEffect(() => {
+    if (!isPointerCoarse || typeof window === "undefined") return;
+    const frame = window.requestAnimationFrame(() => {
+      setActiveSelection(null);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [isPointerCoarse]);
   // Only hand a reporter to the messages when an action exists; otherwise the
   // wrapper stays inert and the floating menu never mounts.
   const reportProseSelection = useMemo<
@@ -1751,8 +1833,15 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
   // side chat on the SELECTION (not the whole message), so the reply's context
   // is exactly what the user highlighted.
   const handleSelectionAddToChat = useCallback(
-    (text: string) => {
-      onSelectionAddToChat?.(text);
+    (
+      text: string,
+      attachments?: Parameters<ThreadTimelineSelectionAddToChatHandler>[1],
+    ) => {
+      if (attachments === undefined) {
+        onSelectionAddToChat?.(text);
+      } else {
+        onSelectionAddToChat?.(text, attachments);
+      }
       setActiveSelection(null);
     },
     [onSelectionAddToChat],
@@ -1833,6 +1922,9 @@ function ThreadTimelineRowsForTimelineView(props: ThreadTimelineRowsProps) {
       <TimelineTurnStateContext.Provider value={turnStateContextValue}>
         <AutoHeightContainer>
           <TimelineRowsList
+            hasOlderTimelineRows={props.hasOlderTimelineRows}
+            isLoadingOlderTimelineRows={props.isLoadingOlderTimelineRows}
+            onLoadOlderRows={props.onLoadOlderRows}
             rows={rows}
             scopeActive={scopeActive}
             showAssistantMessageActions={true}

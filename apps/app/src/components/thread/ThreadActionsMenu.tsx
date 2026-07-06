@@ -17,6 +17,7 @@ import {
 import { Icon, type IconName } from "@/components/ui/icon.js";
 import { Button } from "@/components/ui/button.js";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing.js";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport.js";
 import { cn } from "@/lib/utils";
 import { isThreadRead } from "@/lib/thread-read-state";
 import { useThreadActions } from "./ThreadActionsProvider";
@@ -51,6 +52,7 @@ interface ThreadActionsMenuItemsProps extends ThreadActionsMenuBaseProps {
 interface ThreadActionMenuItemProps {
   children: ReactNode;
   className?: string;
+  variant?: "default" | "destructive";
   icon: IconName;
   onSelect?: (event: Event) => void;
   surface: ThreadActionsMenuSurface;
@@ -59,6 +61,7 @@ interface ThreadActionMenuItemProps {
 function ThreadActionMenuItem({
   children,
   className,
+  variant,
   icon,
   onSelect,
   surface,
@@ -72,14 +75,25 @@ function ThreadActionMenuItem({
 
   if (surface === "context") {
     return (
-      <ContextMenuItem className={className} onSelect={onSelect}>
+      <ContextMenuItem
+        className={cn(
+          className,
+          variant === "destructive" &&
+            "text-destructive focus:bg-destructive/15 focus:text-destructive data-[last-hovered]:bg-destructive/15 data-[last-hovered]:text-destructive",
+        )}
+        onSelect={onSelect}
+      >
         {content}
       </ContextMenuItem>
     );
   }
 
   return (
-    <DropdownMenuItem className={className} onSelect={onSelect}>
+    <DropdownMenuItem
+      className={className}
+      variant={variant}
+      onSelect={onSelect}
+    >
       {content}
     </DropdownMenuItem>
   );
@@ -111,12 +125,17 @@ function ThreadActionsMenuItems({
     unarchiveThread,
     sendToPopout,
   } = useThreadActions();
+  const isCompactViewport = useIsCompactViewport();
+  const isDrawer = surface === "dropdown" && isCompactViewport;
+  const showSeparators = !isDrawer;
   const isRead = isThreadRead(thread);
   const isArchived = thread.archivedAt != null;
   const isPinned = thread.pinnedAt !== null;
+  const canSendToPopout = sendToPopout !== null;
 
   return (
     <>
+      {/* Quick status toggles. */}
       <ThreadActionMenuItem
         surface={surface}
         icon={isRead ? "Mail" : "MailOpen"}
@@ -124,7 +143,7 @@ function ThreadActionsMenuItems({
           toggleRead(thread);
         }}
       >
-        {isRead ? "Mark as unread" : "Mark as read"}
+        {isRead ? "Mark unread" : "Mark read"}
       </ThreadActionMenuItem>
       <ThreadActionMenuItem
         surface={surface}
@@ -135,8 +154,10 @@ function ThreadActionsMenuItems({
       >
         {isPinned ? "Unpin" : "Pin"}
       </ThreadActionMenuItem>
-      <ThreadActionMenuSeparator surface={surface} />
-      {sendToPopout !== null ? (
+      {showSeparators && canSendToPopout ? (
+        <ThreadActionMenuSeparator surface={surface} />
+      ) : null}
+      {canSendToPopout ? (
         <ThreadActionMenuItem
           surface={surface}
           icon="ExternalLink"
@@ -158,7 +179,7 @@ function ThreadActionsMenuItems({
       >
         Rename
       </ThreadActionMenuItem>
-      <ThreadActionMenuSeparator surface={surface} />
+      {showSeparators ? <ThreadActionMenuSeparator surface={surface} /> : null}
       <ThreadActionMenuItem
         surface={surface}
         icon={isArchived ? "ArchiveRestore" : "Archive"}
@@ -176,7 +197,7 @@ function ThreadActionsMenuItems({
         <ThreadActionMenuItem
           surface={surface}
           icon="Trash2"
-          className="text-destructive focus:text-destructive"
+          variant="destructive"
           onSelect={() => {
             window.setTimeout(() => {
               requestDelete(thread);
@@ -210,7 +231,6 @@ export function ThreadActionsMenu({
             "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
           )}
           aria-label="Thread actions"
-          title="Thread actions"
           onClick={(event) => {
             event.stopPropagation();
           }}

@@ -61,7 +61,6 @@ function SplitButton({
           "rounded-r-none border-r-0 pr-1 focus-visible:z-10",
         )}
         aria-label={primaryAction.label}
-        title={primaryAction.label}
         onClick={primaryAction.onSelect}
       >
         {primaryAction.content ?? primaryAction.label}
@@ -73,11 +72,10 @@ function SplitButton({
             disabled={disabled}
             className={cn(
               base,
-              "rounded-l-none border-l-0 px-1 pl-0 focus-visible:z-10",
+              "rounded-l-none border-l-0 px-1 focus-visible:z-10",
               "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
             )}
             aria-label={triggerLabel}
-            title={triggerLabel}
           >
             <Icon name="ChevronDown" className="size-3" />
           </button>

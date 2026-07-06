@@ -3,11 +3,13 @@ import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { Hono } from "hono";
+import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import {
   buildLocalAppOrigins,
   type BuildLocalAppOriginsArgs,
 } from "@bb/config/local-app-origins";
+import { getExperiments } from "@bb/db";
 import type { AppDeps, ServerAppDeps } from "./types.js";
 import { ApiError, errorToResponse } from "./errors.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
@@ -19,6 +21,16 @@ import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
+import { registerUiRoutes } from "./routes/ui.js";
+import { registerPluginRoutes } from "./routes/plugins.js";
+import {
+  createPluginService,
+  type PluginService,
+} from "./services/plugins/plugin-service.js";
+import { setPluginAgentContributions } from "./services/plugins/plugin-agent-contributions.js";
+import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
+import { createUiSourceService } from "./services/ui-source/ui-source.js";
+import { injectRecoveryShim } from "./services/ui-source/recovery-shim.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
@@ -28,7 +40,11 @@ import {
   setAuthenticatedDaemon,
   verifyAuthenticatedDaemon,
 } from "./internal/auth.js";
-import { captureTrustedRemoteAddress } from "./request-context.js";
+import {
+  captureTrustedRemoteAddress,
+  resolveRequestAppSurface,
+} from "./request-context.js";
+import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
   onClientSocketMessage,
@@ -55,6 +71,7 @@ export interface ServerApp {
   app: Hono;
   closeWebSockets: CloseWebSockets;
   injectWebSocket: ReturnType<typeof createNodeWebSocket>["injectWebSocket"];
+  pluginService: PluginService;
 }
 
 interface CloseWebSocketServerArgs {
@@ -83,9 +100,21 @@ function normalizeInternalAuthPath(path: string): string {
 interface CreateAppOptions {
   slowApiRequestLogThresholdMs?: number;
   staticDir?: string;
+  /**
+   * Directory holding the shipped app source (with vite.ui.config.ts), used to
+   * seed and build the user-editable UI source. When set, the `/api/v1/ui/*`
+   * routes are enabled and static serving can swap to the built UI source.
+   */
+  appDir?: string;
+  /** Directory holding the @bb/* packages as source (defaults to <appDir>/../../packages). */
+  packagesSourceDir?: string;
+  /** Fetch the shipped source before seeding (packaged install clones the release tag). */
+  ensureUiSource?: () => Promise<{ ok: boolean; log: string }>;
 }
 
 interface StaticResponseHeadersArgs {
+  contentEncoding?: string;
+  contentLength?: number;
   contentType: string;
   urlPath: string;
 }
@@ -98,6 +127,10 @@ const WEB_SOCKET_SHUTDOWN_REASON = "server-shutdown";
 const SLOW_API_REQUEST_LOG_THRESHOLD_MS = 1_000;
 const THREAD_EVENT_WAIT_PATH_PATTERN =
   /^\/api\/v1\/threads\/[^/]+\/events\/wait$/u;
+const PRECOMPRESSED_STATIC_FILES = [
+  { encoding: "br", extension: ".br" },
+  { encoding: "gzip", extension: ".gz" },
+] as const;
 
 interface ShouldLogSlowApiRequestArgs {
   durationMs: number;
@@ -121,7 +154,101 @@ function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
       ? STATIC_ASSET_CACHE_CONTROL
       : STATIC_INDEX_CACHE_CONTROL,
   );
+  if (args.contentEncoding !== undefined) {
+    headers.set("content-encoding", args.contentEncoding);
+    headers.set("vary", "Accept-Encoding");
+  }
+  if (args.contentLength !== undefined) {
+    headers.set("content-length", String(args.contentLength));
+  }
   return headers;
+}
+
+function acceptedEncodingQuality(
+  acceptEncodingHeader: string | undefined,
+  encoding: string,
+): number {
+  if (acceptEncodingHeader === undefined) {
+    return 0;
+  }
+  let wildcardQuality = 0;
+  for (const part of acceptEncodingHeader.split(",")) {
+    const [rawName, ...rawParams] = part.trim().split(";");
+    const name = rawName?.trim().toLowerCase();
+    const qParam = rawParams
+      .map((param) => param.trim().toLowerCase())
+      .find((param) => param.startsWith("q="));
+    const quality =
+      qParam === undefined
+        ? 1
+        : Number.isNaN(Number(qParam.slice(2)))
+          ? 1
+          : Number(qParam.slice(2));
+    if (name === encoding) {
+      return quality;
+    }
+    if (name === "*") {
+      wildcardQuality = quality;
+    }
+  }
+  return wildcardQuality;
+}
+
+function canServePrecompressedStaticFile(contentType: string): boolean {
+  return (
+    contentType.startsWith("text/") ||
+    contentType === "application/javascript" ||
+    contentType === "application/json" ||
+    contentType === "application/manifest+json" ||
+    contentType === "application/wasm" ||
+    contentType === "application/xml" ||
+    contentType === "image/svg+xml"
+  );
+}
+
+async function findPrecompressedStaticFile(args: {
+  acceptEncodingHeader: string | undefined;
+  contentType: string;
+  filePath: string;
+}): Promise<{
+  contentLength: number;
+  encoding: string;
+  filePath: string;
+} | null> {
+  if (!canServePrecompressedStaticFile(args.contentType)) {
+    return null;
+  }
+
+  const candidates = PRECOMPRESSED_STATIC_FILES.map((candidate, index) => ({
+    ...candidate,
+    index,
+    quality: acceptedEncodingQuality(
+      args.acceptEncodingHeader,
+      candidate.encoding,
+    ),
+  }))
+    .filter((candidate) => candidate.quality > 0)
+    .sort(
+      (left, right) => right.quality - left.quality || left.index - right.index,
+    );
+
+  for (const candidate of candidates) {
+    const encodedFilePath = `${args.filePath}${candidate.extension}`;
+    try {
+      const encodedStat = await stat(encodedFilePath);
+      if (encodedStat.isFile()) {
+        return {
+          contentLength: encodedStat.size,
+          encoding: candidate.encoding,
+          filePath: encodedFilePath,
+        };
+      }
+    } catch {
+      // Sidecar missing — try the next acceptable encoding.
+    }
+  }
+
+  return null;
 }
 
 function buildAllowedCorsOrigins(deps: AppDeps): Set<string> {
@@ -175,7 +302,8 @@ export function createApp(
 
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
-    await next();
+    const appSurface = resolveRequestAppSurface(context, deps.config.appSurface);
+    return runWithTelemetryAppSurface(appSurface, next);
   });
   app.use(
     "*",
@@ -190,6 +318,7 @@ export function createApp(
       },
     }),
   );
+  app.use("*", compress());
   app.onError((error) => errorToResponse(error, deps.logger));
   app.get("/health", (context) => context.json({ ok: true }));
   app.use("/api/v1/*", async (context, next) => {
@@ -243,6 +372,18 @@ export function createApp(
     }
     return next();
   });
+  const pluginService = createPluginService({
+    db: deps.db,
+    hub: deps.hub,
+    logger: deps.logger,
+    dataDir: deps.config.dataDir,
+    appVersion: deps.config.appVersion,
+    isEnabled: () => getExperiments(deps.db).plugins,
+  });
+  // Bridge the thread lifecycle seams to this service's plugins (§4.5).
+  setPluginThreadEventEmitter(pluginService.events);
+  // Bridge runtime-config assembly to plugin skills + context (§4.4).
+  setPluginAgentContributions(pluginService);
   const publicApi = new Hono();
   registerProjectRoutes(publicApi, deps);
   registerThreadFolderRoutes(publicApi, deps);
@@ -252,7 +393,23 @@ export function createApp(
   registerTerminalRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps);
   registerThreadRoutes(publicApi, deps);
-  registerSystemRoutes(publicApi, deps);
+  registerSystemRoutes(publicApi, deps, pluginService);
+  registerPluginRoutes(publicApi, deps, pluginService);
+  const uiSource = options?.appDir
+    ? createUiSourceService({
+        dataDir: deps.config.dataDir,
+        appDir: options.appDir,
+        packagesSourceDir: options.packagesSourceDir,
+        ensureSource: options.ensureUiSource,
+        hub: deps.hub,
+        logger: deps.logger,
+        version: deps.config.appVersion,
+        isEnabled: () => getExperiments(deps.db).uiForking,
+      })
+    : undefined;
+  if (uiSource) {
+    registerUiRoutes(publicApi, deps, uiSource);
+  }
   app.route("/api/v1", publicApi);
   app.use("/api/v1/*", () => {
     throw new ApiError(404, "not_found", "Not found");
@@ -334,12 +491,13 @@ export function createApp(
   }
 
   if (options?.staticDir) {
-    const root = resolve(options.staticDir);
+    const shippedRoot = resolve(options.staticDir);
     const MIME: Record<string, string> = {
       ".html": "text/html",
       ".js": "application/javascript",
       ".css": "text/css",
       ".json": "application/json",
+      ".webmanifest": "application/manifest+json",
       ".png": "image/png",
       ".svg": "image/svg+xml",
       ".ico": "image/x-icon",
@@ -350,6 +508,12 @@ export function createApp(
     };
 
     app.get("*", async (context) => {
+      // Per request, serve from the built UI source when it is active, else the
+      // shipped UI. Falls back to shipped if the UI source dist is missing.
+      const root = uiSource
+        ? uiSource.resolveActiveRoot(shippedRoot)
+        : shippedRoot;
+      const uiSourceRecoveryEnabled = root !== shippedRoot;
       const urlPath =
         context.req.path === "/" ? "/index.html" : context.req.path;
       const filePath = join(root, urlPath);
@@ -359,9 +523,36 @@ export function createApp(
       try {
         const fileStat = await stat(filePath);
         if (fileStat.isFile()) {
-          const content = await readFile(filePath);
           const contentType =
             MIME[extname(filePath)] ?? "application/octet-stream";
+          // Inject the recovery shim into every served HTML document so the
+          // reload wiring is always present. The UI-source escape hatch is only
+          // valid when this response is serving an active fork.
+          if (contentType === "text/html") {
+            const html = injectRecoveryShim(await readFile(filePath, "utf8"), {
+              recoverEnabled: uiSourceRecoveryEnabled,
+            });
+            return new Response(html, {
+              headers: createStaticResponseHeaders({ contentType, urlPath }),
+            });
+          }
+          const precompressedFile = await findPrecompressedStaticFile({
+            acceptEncodingHeader: context.req.header("accept-encoding"),
+            contentType,
+            filePath,
+          });
+          if (precompressedFile !== null) {
+            const content = await readFile(precompressedFile.filePath);
+            return new Response(content, {
+              headers: createStaticResponseHeaders({
+                contentEncoding: precompressedFile.encoding,
+                contentLength: precompressedFile.contentLength,
+                contentType,
+                urlPath,
+              }),
+            });
+          }
+          const content = await readFile(filePath);
           return new Response(content, {
             headers: createStaticResponseHeaders({ contentType, urlPath }),
           });
@@ -369,7 +560,10 @@ export function createApp(
       } catch {
         // File not found — fall through to SPA fallback
       }
-      const indexHtml = await readFile(join(root, "index.html"));
+      const indexHtml = injectRecoveryShim(
+        await readFile(join(root, "index.html"), "utf8"),
+        { recoverEnabled: uiSourceRecoveryEnabled },
+      );
       return new Response(indexHtml, {
         headers: createStaticResponseHeaders({
           contentType: "text/html",
@@ -388,5 +582,6 @@ export function createApp(
         server: wss,
       }),
     injectWebSocket,
+    pluginService,
   };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PromptMentionResource } from "@bb/domain";
 import {
+  appendQuoteAndAttachmentsToDraft,
   appendQuoteToDraftText,
   emptyPromptDraftState,
   isPromptDraftEmpty,
@@ -8,6 +9,16 @@ import {
   promptDraftToInput,
   promptInputToDraft,
 } from "./prompt-draft";
+
+const LOOP_COMMAND_RESOURCE: PromptMentionResource = {
+  kind: "command",
+  trigger: "/",
+  name: "loop",
+  source: "command",
+  origin: "user",
+  label: "loop",
+  argumentHint: null,
+};
 
 describe("prompt draft helpers", () => {
   it("drops invalid legacy raw text drafts", () => {
@@ -100,6 +111,108 @@ describe("prompt draft helpers", () => {
         name: "spec.md",
         sizeBytes: 42,
         mimeType: "text/markdown",
+      },
+    ]);
+  });
+
+  it("expands loop command pills before mapping draft text to prompt input", () => {
+    const input = promptDraftToInput({
+      text: "/loop keep checking CI",
+      mentions: [
+        {
+          start: 0,
+          end: "/loop".length,
+          resource: LOOP_COMMAND_RESOURCE,
+        },
+      ],
+      attachments: [],
+    });
+
+    expect(input).toEqual([
+      {
+        type: "text",
+        text: "Create a new bb loop to keep checking CI",
+        mentions: [],
+      },
+    ]);
+  });
+
+  it("keeps mention ranges correct after expanding a loop command pill", () => {
+    const threadResource: PromptMentionResource = {
+      kind: "thread",
+      threadId: "thr_child",
+      label: "Child thread",
+    };
+    const text = "/loop inspect @thread";
+    const threadToken = "@thread";
+    const threadStart = text.indexOf(threadToken);
+    if (threadStart < 0) {
+      throw new Error("Expected thread token in test text");
+    }
+
+    const input = promptDraftToInput({
+      text,
+      mentions: [
+        {
+          start: 0,
+          end: "/loop".length,
+          resource: LOOP_COMMAND_RESOURCE,
+        },
+        {
+          start: threadStart,
+          end: threadStart + threadToken.length,
+          resource: threadResource,
+        },
+      ],
+      attachments: [],
+    });
+
+    expect(input).toEqual([
+      {
+        type: "text",
+        text: "Create a new bb loop to inspect @thread",
+        mentions: [
+          {
+            start: "Create a new bb loop to inspect ".length,
+            end: "Create a new bb loop to inspect @thread".length,
+            resource: threadResource,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("leaves literal loop text unchanged when it is not a command pill", () => {
+    const input = promptDraftToInput({
+      text: "/loop keep checking CI",
+      mentions: [],
+      attachments: [],
+    });
+
+    expect(input).toEqual([
+      { type: "text", text: "/loop keep checking CI", mentions: [] },
+    ]);
+  });
+
+  it("omits zero-size localFile size when mapping draft attachments to prompt input", () => {
+    const input = promptDraftToInput({
+      text: "",
+      mentions: [],
+      attachments: [
+        {
+          type: "localFile",
+          path: "uploads/spec.md",
+          name: "spec.md",
+          sizeBytes: 0,
+        },
+      ],
+    });
+
+    expect(input).toEqual([
+      {
+        type: "localFile",
+        path: "uploads/spec.md",
+        name: "spec.md",
       },
     ]);
   });
@@ -224,5 +337,75 @@ describe("appendQuoteToDraftText", () => {
 
     expect(next.mentions).toEqual([mention]);
     expect(next.text.startsWith(text)).toBe(true);
+  });
+});
+
+describe("appendQuoteAndAttachmentsToDraft", () => {
+  it("appends a quote and merges new attachments", () => {
+    const next = appendQuoteAndAttachmentsToDraft(
+      emptyPromptDraftState(),
+      "review this",
+      [
+        {
+          type: "localImage",
+          path: "uploads/screenshot.png",
+          name: "screenshot.png",
+          sizeBytes: 0,
+        },
+      ],
+    );
+
+    expect(next).toEqual({
+      text: "> review this\n",
+      mentions: [],
+      attachments: [
+        {
+          type: "localImage",
+          path: "uploads/screenshot.png",
+          name: "screenshot.png",
+          sizeBytes: 0,
+        },
+      ],
+    });
+  });
+
+  it("adds attachments even when there is no quote text", () => {
+    const next = appendQuoteAndAttachmentsToDraft(emptyPromptDraftState(), "", [
+      {
+        type: "localFile",
+        path: "uploads/spec.md",
+        name: "spec.md",
+        sizeBytes: 0,
+      },
+    ]);
+
+    expect(next).toEqual({
+      text: "",
+      mentions: [],
+      attachments: [
+        {
+          type: "localFile",
+          path: "uploads/spec.md",
+          name: "spec.md",
+          sizeBytes: 0,
+        },
+      ],
+    });
+  });
+
+  it("dedupes attachments by path", () => {
+    const attachment = {
+      type: "localFile" as const,
+      path: "uploads/spec.md",
+      name: "spec.md",
+      sizeBytes: 0,
+    };
+    const base = {
+      text: "",
+      mentions: [],
+      attachments: [attachment],
+    };
+
+    expect(appendQuoteAndAttachmentsToDraft(base, "", [attachment])).toBe(base);
   });
 });

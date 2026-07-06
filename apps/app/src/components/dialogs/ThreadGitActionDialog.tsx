@@ -104,7 +104,7 @@ export function ThreadGitActionDialog({
 
   return (
     <Dialog open={target !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[34rem] gap-0 overflow-hidden border-border bg-background p-0 shadow-xl">
+      <DialogContent className="max-w-[34rem] gap-0 overflow-hidden border-border bg-background p-0 shadow-sm">
         {target && dialogCopy ? (
           <ThreadGitActionDialogContent
             key={target.kind}
@@ -227,9 +227,6 @@ export function ThreadGitActionDialogContent({
       : selectedMergeBaseBranchMissing
         ? missingMergeBaseErrorMessage
         : null);
-  const submitTitle = selectedMergeBaseBranchClassificationPending
-    ? checkingMergeBaseMessage
-    : (mergeBaseValidationErrorMessage ?? undefined);
   const footerMergeBaseMessage =
     visibleMergeBaseErrorMessage ?? visibleMergeBaseStatusMessage;
   const footerMergeBaseMessageIsError = Boolean(visibleMergeBaseErrorMessage);
@@ -392,11 +389,11 @@ export function ThreadGitActionDialogContent({
           ) : null}
           <Button
             type="submit"
+            size="sm"
             className="shrink-0"
             disabled={
               dialogCopy.showMergeBase && mergeBaseSubmitBlockMessage !== null
             }
-            title={submitTitle}
           >
             {dialogCopy.submitLabel}
           </Button>

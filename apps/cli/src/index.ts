@@ -5,16 +5,24 @@ import { registerEnvironmentCommands } from "./commands/environment.js";
 import { registerGuideCommand } from "./commands/guide.js";
 import { registerManagerCommands } from "./commands/manager.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { registerPluginCommands } from "./commands/plugin.js";
 import { registerProviderCommands } from "./commands/provider.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerThemeCommands } from "./commands/theme.js";
 import { registerThreadCommands } from "./commands/thread/index.js";
+import { registerUiCommands } from "./commands/ui.js";
 import {
   createCliRuntimeContext,
   resolveContextSnapshot,
   resolveServerUrl,
   type CliRuntimeContext,
 } from "./context-env.js";
+import {
+  fetchPluginCliContributions,
+  findPluginCliCommand,
+  pluginProxyCandidate,
+  runPluginCliCommand,
+} from "./plugin-cli-proxy.js";
 import { resolveBbCliVersion } from "./version.js";
 
 const program = new Command();
@@ -28,6 +36,9 @@ function getCliRuntimeContext(): CliRuntimeContext {
 program
   .name("bb")
   .description("BB CLI - manage your AI coding agents")
+  // Program flags (--version/--help) must precede the subcommand; required
+  // so `bb plugin run <id> --flag` passes flags through to the plugin.
+  .enablePositionalOptions()
   .version(resolveBbCliVersion());
 
 program.addHelpText("after", () => {
@@ -68,9 +79,35 @@ registerThreadCommands(program, getUrl);
 registerEnvironmentCommands(program, getUrl);
 registerAutomationCommands(program, getUrl);
 registerThemeCommands(program, getUrl);
+registerUiCommands(program, getUrl);
+registerPluginCommands(program, getUrl);
 registerGuideCommand(program);
 
-program.parseAsync(process.argv).catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+/**
+ * Unknown top-level commands may be plugin-contributed `bb` subcommands
+ * (design §4.4): before letting commander error, ask the server for plugin
+ * CLI contributions (short timeout, silent fallback) and proxy on a match.
+ * Core commands always win — this only runs for names commander doesn't own.
+ */
+async function tryPluginCommandProxy(): Promise<void> {
+  const knownCommandNames = new Set(
+    program.commands.flatMap((command) => [command.name(), ...command.aliases()]),
+  );
+  knownCommandNames.add("help");
+  const candidate = pluginProxyCandidate(process.argv[2], knownCommandNames);
+  if (candidate === null) return;
+  const contributions = await fetchPluginCliContributions(getUrl());
+  if (contributions === null) return;
+  const match = findPluginCliCommand(contributions, candidate);
+  if (match === undefined) return;
+  process.exit(
+    await runPluginCliCommand(getUrl(), match.pluginId, process.argv.slice(3)),
+  );
+}
+
+tryPluginCommandProxy()
+  .then(() => program.parseAsync(process.argv))
+  .catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });

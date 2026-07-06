@@ -171,6 +171,29 @@ describe("ThreadPromptContextBanner", () => {
     expect(markup).not.toContain('alt="Checks success"');
   });
 
+  it("uses the compact pull request pill height inside the banner row", () => {
+    const markup = renderToStaticMarkup(
+      <ThreadPromptContextBanner
+        gitSection={null}
+        gitSectionPending={false}
+        archivedSection={null}
+        environmentGoneSection={null}
+        parentThreadSection={null}
+        childThreadsSection={null}
+        pullRequestSection={{ pullRequest: pullRequestFixture }}
+        expandedSection={null}
+        onToggleSection={noop}
+      />,
+    );
+
+    expect(markup).toMatch(
+      /class="(?=[^"]*\bh-4\b)(?=[^"]*cursor-pointer)[^"]*"/,
+    );
+    expect(markup).not.toMatch(
+      /class="(?=[^"]*\bh-5\b)(?=[^"]*cursor-pointer)[^"]*"/,
+    );
+  });
+
   it("uses the selected pull request merge method as the action label without a merge icon", () => {
     const markup = renderToStaticMarkup(
       <ThreadPromptContextBanner
@@ -253,6 +276,38 @@ describe("ThreadPromptContextBanner", () => {
     );
 
     expect(markup).toContain("PR #128 · Closed");
+  });
+
+  it("renders active child threads as a full active card instead of a compact segment", () => {
+    const markup = renderToStaticMarkup(
+      <MemoryRouter>
+        <ThreadPromptContextBanner
+          gitSection={null}
+          gitSectionPending={false}
+          archivedSection={null}
+          environmentGoneSection={null}
+          parentThreadSection={null}
+          childThreadsSection={{
+            items: [
+              {
+                id: "thr_child",
+                title: "Investigate failing checks",
+                href: "/threads/thr_child",
+              },
+            ],
+          }}
+          pullRequestSection={null}
+          expandedSection={null}
+          onToggleSection={noop}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('aria-label="Active child threads"');
+    expect(markup).toContain("1 active child thread");
+    expect(markup).toContain("rounded-none");
+    expect(markup).not.toContain('aria-label="Thread context before sending"');
+    expect(markup).not.toContain("data-promptbox-hide-compact");
   });
 
   it("labels standalone actionable pull request attention", () => {

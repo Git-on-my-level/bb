@@ -1,4 +1,4 @@
-import { parsePatchFiles } from "@pierre/diffs";
+import { parsePatchFiles, processFile, type FileContents } from "@pierre/diffs";
 import type { GitDiffFileChangeKind } from "@bb/server-contract";
 
 export type ParsedGitDiffFile = ReturnType<
@@ -22,6 +22,38 @@ export function parseGitDiffFiles(
   } catch {
     return [];
   }
+}
+
+export interface GitDiffContextEnrichmentInput {
+  fileDiff: ParsedGitDiffFile;
+  oldFile: FileContents;
+  newFile: FileContents;
+  patchText?: string;
+}
+
+/**
+ * Reparses a card's raw file patch with both full file sides attached. The
+ * diff renderer only exposes expand-context controls when `isPartial` is false
+ * and `additionLines` / `deletionLines` contain complete file contents.
+ */
+export function enrichGitDiffFileForContext({
+  fileDiff,
+  oldFile,
+  newFile,
+  patchText,
+}: GitDiffContextEnrichmentInput): ParsedGitDiffFile {
+  if (!patchText) return fileDiff;
+
+  return (
+    processFile(patchText, {
+      oldFile,
+      newFile,
+      cacheKey:
+        fileDiff.cacheKey === undefined
+          ? undefined
+          : `${fileDiff.cacheKey}:context`,
+    }) ?? fileDiff
+  );
 }
 
 export function summarizeGitDiff(
@@ -113,10 +145,10 @@ export function normalizeGitDiffPath(
   return trimmedPath && trimmedPath.length > 0 ? trimmedPath : undefined;
 }
 
-// Browser-renderable raster formats only. SVG is deliberately absent. SVG
-// diffs arrive as regular text hunks, which are more informative than a
-// rendered preview. TIFF/HEIC are absent because `<img>` can't render them
-// in every browser we support.
+// Browser-renderable raster formats only. SVG diffs arrive as regular text
+// hunks, so SVG preview support is handled separately and keeps a raw toggle.
+// TIFF/HEIC are absent because `<img>` can't render them in every browser we
+// support.
 const IMAGE_GIT_DIFF_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   "avif",
   "bmp",
@@ -128,12 +160,22 @@ const IMAGE_GIT_DIFF_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   "webp",
 ]);
 
-export function isImageGitDiffFile(file: ParsedGitDiffFile): boolean {
-  const path = normalizeGitDiffPath(file.name) ?? file.name;
-  const extension = path.split(".").pop()?.toLowerCase();
+export function isPreviewableImagePath(path: string | undefined): boolean {
+  const normalizedPath = normalizeGitDiffPath(path);
+  if (normalizedPath === undefined) return false;
+  const extension = normalizedPath.split(".").pop()?.toLowerCase();
   return (
     extension !== undefined && IMAGE_GIT_DIFF_FILE_EXTENSIONS.has(extension)
   );
+}
+
+export function isImageGitDiffFile(file: ParsedGitDiffFile): boolean {
+  return isPreviewableImagePath(file.name);
+}
+
+export function isSvgGitDiffFile(file: ParsedGitDiffFile): boolean {
+  const path = normalizeGitDiffPath(file.name) ?? file.name;
+  return path.toLowerCase().endsWith(".svg");
 }
 
 function getGitDiffPathAliases(path: string | undefined): string[] {

@@ -517,9 +517,17 @@ export function BottomAnchoredScrollBody({
       window.performance.now() + USER_SCROLL_INTENT_MS;
   }, []);
 
-  const markWheelScrollIntent = useCallback(() => {
-    markUserScrollIntent();
-  }, [markUserScrollIntent]);
+  const markWheelScrollIntent = useCallback(
+    (event: WheelEvent) => {
+      const scrollArea = scrollAreaRef.current;
+      if (event.deltaY > 0 && scrollArea && isScrolledNearBottom(scrollArea)) {
+        userScrollIntentUntilRef.current = 0;
+        return;
+      }
+      markUserScrollIntent();
+    },
+    [markUserScrollIntent],
+  );
 
   const markTouchStartScrollIntent = useCallback(() => {
     markUserScrollIntent();
@@ -557,6 +565,7 @@ export function BottomAnchoredScrollBody({
     if (isScrolledNearBottom(scrollArea)) {
       userDetachedFromBottomRef.current = false;
       shouldStickToBottomRef.current = true;
+      userScrollIntentUntilRef.current = 0;
       setIsAtBottom(true);
       // A deliberate scroll to the bottom during the restore settle window means
       // the user no longer wants the saved row; stop re-applying it.
@@ -779,7 +788,7 @@ export function BottomAnchoredScrollBody({
         {scrollOverlay ? (
           <div
             data-scroll-overlay=""
-            className="pointer-events-none z-30 col-start-1 row-start-1 flex min-h-0 min-w-0 items-start justify-start px-3 pt-3"
+            className="pointer-events-none z-30 col-start-1 row-start-1 flex min-h-0 min-w-0 items-center justify-end px-3 py-3"
           >
             <div className="pointer-events-auto">{scrollOverlay}</div>
           </div>

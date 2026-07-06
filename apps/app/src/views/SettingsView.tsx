@@ -1,4 +1,5 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   builtInThemes,
   defaultAppTheme,
@@ -19,6 +20,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { PageShell } from "@/components/ui/page-shell.js";
@@ -34,6 +36,8 @@ import {
 } from "@/hooks/useTheme";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { UsageLimitsSettingsSection } from "@/components/settings/UsageLimitsSettingsSection";
+import { PluginsSettingsSection } from "@/components/settings/PluginsSettingsSection";
+import { FileOpenersSettingsSection } from "@/components/settings/FileOpenersSettingsSection";
 import {
   useUpdateAppearance,
   useUpdateExperiments,
@@ -48,6 +52,7 @@ import {
 import { useOpenLinksInAppBrowserPreference } from "@/lib/in-app-browser-link-preference";
 import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite-preference";
 import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
+import { getRootComposeRoutePath } from "@/lib/route-paths";
 import { useNavigateToThreadAfterCreatePreference } from "@/lib/root-compose-create-preference";
 import { cn } from "@/lib/utils";
 import {
@@ -126,6 +131,7 @@ export interface GeneralSettingsSectionProps {
   faviconColor: FaviconColorPreference;
   navigateToThreadAfterCreate: boolean;
   onAppearanceThemeChange: (themeId: string) => void;
+  onCreatePalette: () => void;
   onFaviconColorChange: (faviconColor: FaviconColorPreference) => void;
   onNavigateToThreadAfterCreateChange: (enabled: boolean) => void;
   onOpenLinksInAppBrowserChange: (enabled: boolean) => void;
@@ -151,8 +157,12 @@ export interface ExperimentsSettingsSectionProps {
   onClaudeCodeMockCliTrafficEnabledChange: (enabled: boolean) => void;
   onPopoutChatEnabledChange: (enabled: boolean) => void;
   onPopoutChatHotkeyChange: (hotkey: string) => void;
+  onPluginsEnabledChange: (enabled: boolean) => void;
+  onUiForkingEnabledChange: (enabled: boolean) => void;
+  pluginsEnabled: boolean;
   popoutChatEnabled: boolean;
   popoutChatHotkey: string;
+  uiForkingEnabled: boolean;
 }
 
 const THEME_PREFERENCE_OPTIONS: ReadonlyArray<ThemePreferenceOption> = [
@@ -191,6 +201,16 @@ const FAVICON_COLOR_LABELS: Record<FaviconColorPreference, string> = {
   yellow: "Yellow",
 };
 
+const SETTINGS_DROPDOWN_TRIGGER_CLASS =
+  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs sm:w-36";
+const SETTINGS_DROPDOWN_CONTENT_CLASS =
+  "min-w-[var(--radix-dropdown-menu-trigger-width)]";
+
+const CREATE_CUSTOM_PALETTE_PROMPT =
+  "Create a custom bb palette. First run `bb theme dir` to find the custom theme directory. Ask me for the palette name and visual direction, then create `<theme-dir>/<name>/theme.css` with light and dark theme variables compatible with bb's theme tokens.";
+const PALETTE_SETTING_DESCRIPTION =
+  "Palettes change bb's colors across light and dark mode. Choose a built-in palette or create one from a prompt.";
+
 // Renders the favicon glyph itself in the candidate color by using the
 // favicon image as a CSS mask, so the preview matches the resulting tab icon.
 function FaviconColorPreview({ value }: { value: FaviconColorPreference }) {
@@ -216,14 +236,14 @@ export function FaviconColorSettingsControl({
   return (
     <SettingsWithControl
       label="Favicon color"
-      description="Tint the browser tab icon to tell instances apart."
+      description="Tint browser tabs to tell instances apart."
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="outline"
             size="sm"
-            className="w-full justify-between border-border/60 bg-card sm:w-48"
+            className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
             aria-label="Favicon color"
             disabled={disabled}
           >
@@ -239,7 +259,10 @@ export function FaviconColorSettingsControl({
             />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuContent
+          align="end"
+          className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+        >
           {FAVICON_COLOR_OPTIONS.map((option) => (
             <DropdownMenuItem
               key={option.value}
@@ -316,13 +339,15 @@ function LocalOpenTargetPreferenceControl({
           <Button
             variant="outline"
             size="sm"
-            className="w-full justify-between border-border/60 bg-card sm:w-48"
+            className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
             aria-label={definition.label}
           >
             <span className="flex min-w-0 items-center gap-2">
               {selectedTargetId ? (
                 <WorkspaceOpenTargetIcon
-                  targetId={selectedTargetId}
+                  {...(resolvedTarget
+                    ? { target: resolvedTarget }
+                    : { targetId: selectedTargetId })}
                   className="size-5"
                 />
               ) : null}
@@ -334,7 +359,10 @@ function LocalOpenTargetPreferenceControl({
             />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuContent
+          align="end"
+          className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+        >
           {unavailableMessage ? (
             <div
               role="note"
@@ -349,7 +377,7 @@ function LocalOpenTargetPreferenceControl({
                 onSelect={() => onTargetChange(target.id)}
               >
                 <WorkspaceOpenTargetIcon
-                  targetId={target.id}
+                  target={target}
                   className="size-5"
                 />
                 <span className="min-w-0 truncate">{target.label}</span>
@@ -384,7 +412,7 @@ export function LocalOpenTargetSettingsSection({
 
   return (
     <SettingsSection title="File Preferences">
-      <div className="space-y-4">
+      <div className="space-y-5">
         <LocalOpenTargetPreferenceControl
           definition={DIRECTORY_TARGET_PREFERENCE}
           onTargetChange={onDirectoryTargetChange}
@@ -407,7 +435,7 @@ const REWRITE_LOCALHOST_LINKS_SETTING_LABEL = "Rewrite localhost links";
 const NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL =
   "Navigate to threads on creation";
 const RICH_TEXT_EDITING_SETTING_LABEL =
-  "Rich text formatting in the prompt box";
+  "Markdown formatting in prompt box";
 
 export function RootComposeBehaviorSettingsControl({
   navigateToThreadAfterCreate,
@@ -431,7 +459,7 @@ export function InAppBrowserLinkSettingsControl({
   return (
     <SettingsWithControl
       label={IN_APP_BROWSER_LINK_SETTING_LABEL}
-      description="Open http and https links from bb in the in-app browser panel instead of your default browser."
+      description="Open web links inside bb."
     >
       <Switch
         checked={enabled}
@@ -449,7 +477,7 @@ export function RewriteLocalhostLinksSettingsControl({
   return (
     <SettingsWithControl
       label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
-      description="When a rendered Markdown link points to localhost or 127.0.0.1, keep the displayed text unchanged but point the link to this page's hostname."
+      description="Point localhost links at this host."
     >
       <Switch
         checked={enabled}
@@ -465,10 +493,7 @@ export function RichTextEditingSettingsControl({
   onEnabledChange,
 }: RichTextEditingSettingsControlProps) {
   return (
-    <SettingsWithControl
-      label={RICH_TEXT_EDITING_SETTING_LABEL}
-      description="Format the prompt box with Markdown as you type — headings, lists, bold, italic, and inline code. When off, the prompt box stays plain text."
-    >
+    <SettingsWithControl label={RICH_TEXT_EDITING_SETTING_LABEL}>
       <Switch
         checked={enabled}
         onCheckedChange={onEnabledChange}
@@ -491,6 +516,7 @@ export function GeneralSettingsSection({
   onOpenLinksInAppBrowserChange,
   onRewriteLocalhostLinksChange,
   onRichTextEditingChange,
+  onCreatePalette,
   onThemePreferenceChange,
   openLinksInAppBrowser,
   rewriteLocalhostLinks,
@@ -499,14 +525,14 @@ export function GeneralSettingsSection({
 }: GeneralSettingsSectionProps) {
   return (
     <SettingsSection title="General">
-      <div className="space-y-4">
+      <div className="space-y-5">
         <SettingsWithControl label="Theme">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="outline"
                 size="sm"
-                className="w-full justify-between border-border/60 bg-card sm:w-48"
+                className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
                 aria-label="Theme"
               >
                 {THEME_PREFERENCE_LABELS[themePreference]}
@@ -516,7 +542,10 @@ export function GeneralSettingsSection({
                 />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent
+              align="end"
+              className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+            >
               {THEME_PREFERENCE_OPTIONS.map((option) => (
                 <DropdownMenuItem
                   key={option.value}
@@ -539,25 +568,30 @@ export function GeneralSettingsSection({
 
         <SettingsWithControl
           label="Palette"
-          description="Applies to the whole app. Add a custom theme by creating .bb/theme/<name>/theme.css, then pick it here or with the bb theme CLI."
+          description={PALETTE_SETTING_DESCRIPTION}
         >
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="outline"
                 size="sm"
-                className="w-full justify-between border-border/60 bg-card sm:w-48"
+                className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
                 aria-label="Palette"
                 disabled={appearanceDisabled}
               >
-                {appPaletteLabel(appearance)}
+                <span className="min-w-0 truncate">
+                  {appPaletteLabel(appearance)}
+                </span>
                 <Icon
                   name="ChevronDown"
                   className="size-3.5 text-muted-foreground"
                 />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent
+              align="end"
+              className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+            >
               {builtInThemes.map((entry) => (
                 <DropdownMenuItem
                   key={entry.id}
@@ -590,6 +624,11 @@ export function GeneralSettingsSection({
                   />
                 </DropdownMenuItem>
               ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onCreatePalette}>
+                <Icon name="Plus" className={COARSE_POINTER_ICON_SIZE_CLASS} />
+                Create
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </SettingsWithControl>
@@ -631,6 +670,8 @@ export function GeneralSettingsSection({
 const CLAUDE_CODE_MOCK_CLI_TRAFFIC_EXPERIMENT_LABEL = "Mock CLI Traffic";
 const POPOUT_CHAT_EXPERIMENT_LABEL = "Popout chat";
 const POPOUT_CHAT_HOTKEY_LABEL = "Hotkey";
+const PLUGINS_EXPERIMENT_LABEL = "Plugins";
+const UI_FORKING_EXPERIMENT_LABEL = "UI forking";
 
 interface HotkeyRecorderProps {
   disabled: boolean;
@@ -812,20 +853,25 @@ export function ExperimentsSettingsSection({
   desktopShellAvailable,
   disabled,
   onClaudeCodeMockCliTrafficEnabledChange,
+  onPluginsEnabledChange,
   onPopoutChatEnabledChange,
   onPopoutChatHotkeyChange,
+  onUiForkingEnabledChange,
+  pluginsEnabled,
   popoutChatEnabled,
   popoutChatHotkey,
+  uiForkingEnabled,
 }: ExperimentsSettingsSectionProps) {
   return (
     <SettingsSection
       title="Experiments"
       description="Early features that are off by default. Opt in to try them."
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
         <SettingsWithControl
           label={CLAUDE_CODE_MOCK_CLI_TRAFFIC_EXPERIMENT_LABEL}
-          description="Proxy Claude Code requests as CLI traffic to api.anthropic.com."
+          labelBadge="dev-only"
+          description="Route Claude Code through CLI-style traffic."
         >
           <Switch
             checked={claudeCodeMockCliTrafficEnabled}
@@ -836,8 +882,32 @@ export function ExperimentsSettingsSection({
         </SettingsWithControl>
 
         <SettingsWithControl
+          label={PLUGINS_EXPERIMENT_LABEL}
+          description="Enable BB plugins (bb plugin). Plugins are full-trust code that extends the server and UI. This feature is unstable, and plugins might break in the future. Off unloads all plugin code."
+        >
+          <Switch
+            checked={pluginsEnabled}
+            disabled={disabled}
+            onCheckedChange={onPluginsEnabledChange}
+            aria-label={PLUGINS_EXPERIMENT_LABEL}
+          />
+        </SettingsWithControl>
+
+        <SettingsWithControl
+          label={UI_FORKING_EXPERIMENT_LABEL}
+          description="Let the bb CLI (bb ui) fork, edit, and live-reload the app's own frontend. This feature is unstable, and your forks will probably break in the future. Off keeps the shipped UI."
+        >
+          <Switch
+            checked={uiForkingEnabled}
+            disabled={disabled}
+            onCheckedChange={onUiForkingEnabledChange}
+            aria-label={UI_FORKING_EXPERIMENT_LABEL}
+          />
+        </SettingsWithControl>
+
+        <SettingsWithControl
           label={POPOUT_CHAT_EXPERIMENT_LABEL}
-          description="Summon a compact, always-on-top chat with a global hotkey. Desktop app only."
+          description="Open compact desktop chat with a hotkey."
         >
           <div className="flex items-center gap-2">
             {!desktopShellAvailable ? (
@@ -858,7 +928,7 @@ export function ExperimentsSettingsSection({
           <div className="border-l border-border pl-3">
             <SettingsWithControl
               label={POPOUT_CHAT_HOTKEY_LABEL}
-              description="Press the chip and type a new combination."
+              description="Record the popout chat shortcut."
             >
               <HotkeyRecorder
                 disabled={disabled || !desktopShellAvailable}
@@ -874,6 +944,7 @@ export function ExperimentsSettingsSection({
 }
 
 export function SettingsView() {
+  const navigate = useNavigate();
   const themePreference = useThemePreference();
   const systemConfigQuery = useSystemConfig();
   const { hasDaemon } = useHostDaemon();
@@ -901,7 +972,7 @@ export function SettingsView() {
 
   return (
     <PageShell contentClassName="pt-4 md:pt-5">
-      <div className="mx-auto w-full max-w-3xl space-y-6">
+      <div className="mx-auto w-full max-w-3xl space-y-10">
         <GeneralSettingsSection
           appearance={appearance}
           appearanceDisabled={
@@ -918,6 +989,14 @@ export function SettingsView() {
           themePreference={themePreference}
           onAppearanceThemeChange={(themeId) =>
             updateAppearanceMutation.mutate({ themeId })
+          }
+          onCreatePalette={() =>
+            navigate(getRootComposeRoutePath(), {
+              state: {
+                focusPrompt: true,
+                initialPrompt: CREATE_CUSTOM_PALETTE_PROMPT,
+              },
+            })
           }
           onFaviconColorChange={(faviconColor) =>
             updateAppearanceMutation.mutate({
@@ -942,6 +1021,8 @@ export function SettingsView() {
           onFileTargetChange={setFileTargetId}
           targets={workspaceOpenTargets}
         />
+
+        <FileOpenersSettingsSection />
 
         <ExperimentsSettingsSection
           claudeCodeMockCliTrafficEnabled={experiments.claudeCodeMockCliTraffic}
@@ -968,9 +1049,25 @@ export function SettingsView() {
               popoutChatHotkey: hotkey,
             })
           }
+          onPluginsEnabledChange={(enabled) =>
+            updateExperimentsMutation.mutate({
+              ...experiments,
+              plugins: enabled,
+            })
+          }
+          onUiForkingEnabledChange={(enabled) =>
+            updateExperimentsMutation.mutate({
+              ...experiments,
+              uiForking: enabled,
+            })
+          }
+          pluginsEnabled={experiments.plugins}
           popoutChatEnabled={experiments.popoutChat}
           popoutChatHotkey={experiments.popoutChatHotkey}
+          uiForkingEnabled={experiments.uiForking}
         />
+
+        <PluginsSettingsSection />
       </div>
     </PageShell>
   );

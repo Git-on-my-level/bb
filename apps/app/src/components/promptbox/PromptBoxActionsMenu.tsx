@@ -26,10 +26,10 @@ interface PromptBoxActionsMenuProps {
   onAction: (action: PromptBoxAction) => void;
 }
 
-export const CREATE_LOOP_PROMPT = "Create a new bb loop to ";
 export const LOOP_PROMPT_ACTION: PromptBoxAction = {
   kind: "loop",
-  text: CREATE_LOOP_PROMPT,
+  command: { trigger: "/", name: "loop", trailingText: " " },
+  text: "/loop ",
 };
 
 const PROMPT_ACTION_ORDER: readonly PromptBoxActionKind[] = [
@@ -116,7 +116,6 @@ export function PromptBoxActionsMenu({
           type="button"
           size="icon"
           variant="ghost"
-          title="Prompt actions"
           aria-label="Prompt actions"
           className={cn(
             COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
@@ -130,8 +129,9 @@ export function PromptBoxActionsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         aria-label="Prompt actions"
-        align="end"
-        side="top"
+        align="start"
+        side="bottom"
+        sideOffset={4}
         className="w-36"
         mobileTitle="Prompt actions"
         onCloseAutoFocus={(event) => {

@@ -718,6 +718,8 @@ describe("thread runtime config", () => {
         claudeCodeMockCliTraffic: true,
         popoutChat: false,
         popoutChatHotkey: "Alt+Space",
+        plugins: false,
+        uiForking: false,
       });
 
       expect((await buildCommand(2)).options.claudeCodeMockCliTraffic).toEqual({
@@ -949,13 +951,16 @@ describe("thread runtime config", () => {
       expect(runtimeConfig.instructions).toContain(
         "You are working inside bb, an agentic IDE",
       );
+      expect(runtimeConfig.instructions).toContain("bb status");
+      expect(runtimeConfig.instructions).toContain("bb guide");
+      expect(runtimeConfig.instructions).toContain("Markdown links");
       expect(runtimeConfig.instructions).toContain(
         "update_environment_directory",
       );
     });
   });
 
-  it("does not expose agent send-to-main tools for side chat threads", async () => {
+  it("does not expose mutable dynamic tools for side chat threads", async () => {
     await withTestHarness(async (harness) => {
       const hostId = "host-side-chat-runtime";
       seedHostSession(harness.deps, { id: hostId });
@@ -993,11 +998,10 @@ describe("thread runtime config", () => {
         },
       );
 
-      expect(runtimeConfig.dynamicTools).toEqual([
-        expect.objectContaining({
-          name: "update_environment_directory",
-        }),
-      ]);
+      expect(runtimeConfig.dynamicTools).toEqual([]);
+      expect(runtimeConfig.instructions).not.toContain(
+        "update_environment_directory",
+      );
       expect(runtimeConfig.instructions).not.toContain(
         "bb_send_to_main_thread",
       );

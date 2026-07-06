@@ -42,6 +42,14 @@ interface BuildModelLoadErrorArgs {
   provider: ProviderInfo;
 }
 
+interface ExpectedFallbackErrorLogFields {
+  errorCode: string;
+  errorDetails?: unknown;
+  errorMessage: string;
+  errorRetryable?: boolean;
+  errorStatus: number;
+}
+
 type ModelListResult = Pick<
   SystemExecutionOptionsResponse,
   "modelLoadError" | "models" | "selectedOnlyModels"
@@ -101,10 +109,43 @@ function listConfiguredSystemProviderInfos(
   return providers;
 }
 
+function includeRequestedKnownAcpProvider(
+  providers: ProviderInfo[],
+  providerId: string | undefined,
+): ProviderInfo[] {
+  if (
+    providerId === undefined ||
+    providers.some((provider) => provider.id === providerId)
+  ) {
+    return providers;
+  }
+  const knownAgent = findKnownAcpAgentForProviderId(providerId);
+  return knownAgent === undefined
+    ? providers
+    : [...providers, buildKnownAcpProviderInfo(knownAgent)];
+}
+
 function canOmitKnownAcpAgentsForError(error: unknown): error is ApiError {
   return (
     error instanceof ApiError && (error.status === 502 || error.status === 504)
   );
+}
+
+function expectedFallbackErrorLogFields(
+  error: ApiError,
+): ExpectedFallbackErrorLogFields {
+  const fields: ExpectedFallbackErrorLogFields = {
+    errorCode: error.body.code,
+    errorMessage: error.body.message,
+    errorStatus: error.status,
+  };
+  if (error.body.details !== undefined) {
+    fields.errorDetails = error.body.details;
+  }
+  if (error.body.retryable !== undefined) {
+    fields.errorRetryable = error.body.retryable;
+  }
+  return fields;
 }
 
 async function listInstalledKnownAcpAgents(
@@ -147,7 +188,7 @@ async function listInstalledKnownAcpAgents(
     }
     deps.logger.warn(
       {
-        err: error,
+        ...expectedFallbackErrorLogFields(error),
         hostId,
       },
       "Failed to resolve known ACP agent status",
@@ -182,7 +223,7 @@ function resolveSystemProviderInfosPlan(
       throw error;
     }
     deps.logger.warn(
-      { err: error },
+      expectedFallbackErrorLogFields(error),
       "Failed to resolve host for known ACP agent status",
     );
     return {
@@ -319,6 +360,7 @@ export async function resolveSystemExecutionOptions(
     await earlyModelResultPromise?.catch(() => undefined);
     throw error;
   }
+  providers = includeRequestedKnownAcpProvider(providers, query.providerId);
   const requestedProvider = query.providerId
     ? providers.find((provider) => provider.id === query.providerId)
     : undefined;
@@ -429,7 +471,7 @@ async function loadSystemProviderModels(
     }
     deps.logger.warn(
       {
-        err: error,
+        ...expectedFallbackErrorLogFields(error),
         hostId,
         providerId: provider.id,
       },

@@ -13,7 +13,7 @@ import {
   environmentDiffFilesQueryKey,
   environmentDiffPatchQueryKey,
   environmentWorkStatusQueryKey,
-  localPathExistenceQueryKey,
+  hostPathExistenceQueryKey,
   projectPathsQueryKey,
   projectPromptHistoryQueryKey,
   projectSourceBranchesQueryKey,
@@ -30,6 +30,7 @@ import {
   threadTimelineQueryKey,
   threadTimelineTurnSummaryDetailsQueryKey,
 } from "./queries/query-keys";
+import { pluginContributionsQueryKey } from "./queries/plugin-contribution-queries";
 import { createRealtimeCacheEffects } from "./realtime-cache-effects";
 import {
   REALTIME_ENVIRONMENT_CHANGE_REGISTRY,
@@ -132,12 +133,38 @@ describe("createRealtimeCacheEffects", () => {
     }
   });
 
-  it("maps every realtime system change to at least one dirty handler", () => {
+  it("maps every cache-affecting system change to a dirty handler; ui-reloaded is reload-only", () => {
     for (const changeKind of SYSTEM_CHANGE_KINDS) {
-      expect(
-        REALTIME_SYSTEM_CHANGE_REGISTRY[changeKind].dirty.length,
-      ).toBeGreaterThan(0);
+      const dirty = REALTIME_SYSTEM_CHANGE_REGISTRY[changeKind]?.dirty ?? [];
+      if (changeKind === "ui-reloaded") {
+        // Live reload after a UI-source rebuild is owned by the server-injected
+        // recovery shim, not the cache layer, so this kind has no dirty handlers.
+        expect(dirty.length).toBe(0);
+      } else {
+        expect(dirty.length).toBeGreaterThan(0);
+      }
     }
+  });
+
+  it("invalidates the plugin contributions cache on plugins-changed", () => {
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const contributionsKey = pluginContributionsQueryKey(true);
+    queryClient.setQueryData(contributionsKey, {
+      threadActions: [],
+      mentionProviders: [],
+    });
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "system",
+      changes: ["plugins-changed"],
+    });
+
+    // System changes flush immediately (no thread-style debounce), so
+    // `bb plugin reload/enable/disable` reaches open composers right away.
+    expect(queryClient.getQueryState(contributionsKey)?.isInvalidated).toBe(
+      true,
+    );
   });
 
   it.each(PROJECT_PROMPT_HISTORY_THREAD_CHANGES)(
@@ -1234,7 +1261,7 @@ describe("createRealtimeCacheEffects", () => {
   it("invalidates project source dependent queries for the changed project", () => {
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const projectsKey = projectsQueryKey();
-    const localPathKey = localPathExistenceQueryKey("host-1", [
+    const localPathKey = hostPathExistenceQueryKey("host-1", [
       "/workspace/project",
     ]);
     const firstProjectPathsKey = projectPathsQueryKey(

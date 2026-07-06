@@ -30,6 +30,7 @@ import {
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import {
   ThreadRenameDialog,
+  type ThreadRenameDialogPayload,
   type ThreadRenameDialogTarget,
 } from "@/components/dialogs/ThreadRenameDialog";
 import {
@@ -39,12 +40,8 @@ import {
 import { ArchivedThreadToastTitle } from "@/components/thread/ArchivedThreadToastTitle";
 import { destroyPersistedBrowserViewsForThread } from "@/components/secondary-panel/browserViewVisibilityCoordinator";
 import { getThreadReadToggleAction } from "@/components/sidebar/threadReadState";
-import {
-  getRootComposeRoutePath,
-  getThreadRoutePath,
-} from "@/lib/route-paths";
+import { getRootComposeRoutePath, getThreadRoutePath } from "@/lib/route-paths";
 import { getDesktopBrowserApi, getDesktopPopoutApi } from "@/lib/bb-desktop";
-import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 
 export interface ThreadActionsContextValue {
@@ -89,7 +86,6 @@ export function ThreadActionsProvider({
   children,
 }: ThreadActionsProviderProps) {
   const navigate = useNavigate();
-  const setRootComposeProjectId = useSetRootComposeProjectId();
   const { threadId: viewedThreadId } = useRouteState();
   const archiveThreadAndChildrenMutation = useArchiveThreadAndChildren();
   const unarchiveThreadMutation = useUnarchiveThread();
@@ -131,13 +127,12 @@ export function ThreadActionsProvider({
   const navigateAwayIfViewing = useCallback(
     (thread: Thread) => {
       if (viewedThreadId === thread.id) {
-        setRootComposeProjectId(thread.projectId);
         // Push (not replace) so the back button still returns the user to the
         // archived/deleted thread's URL if they want to re-open it.
         navigate(getRootComposeRoutePath());
       }
     },
-    [navigate, setRootComposeProjectId, viewedThreadId],
+    [navigate, viewedThreadId],
   );
 
   const requestRename = useCallback(
@@ -151,9 +146,9 @@ export function ThreadActionsProvider({
   );
 
   const submitRename = useCallback(
-    (threadId: string, title: string) => {
+    (threadId: string, payload: ThreadRenameDialogPayload) => {
       updateMutate(
-        { id: threadId, title },
+        { id: threadId, ...payload },
         {
           onSuccess: () => {
             closeRenameDialog();
@@ -283,7 +278,6 @@ export function ThreadActionsProvider({
               viewedThreadId &&
               response.archivedThreadIds.includes(viewedThreadId)
             ) {
-              setRootComposeProjectId(thread.projectId);
               navigate(getRootComposeRoutePath());
             }
             const toastId = `thread-archived-${thread.id}`;
@@ -316,12 +310,7 @@ export function ThreadActionsProvider({
         },
       );
     },
-    [
-      archiveThreadAndChildrenMutate,
-      navigate,
-      setRootComposeProjectId,
-      viewedThreadId,
-    ],
+    [archiveThreadAndChildrenMutate, navigate, viewedThreadId],
   );
 
   const toggleRead = useCallback(
@@ -366,7 +355,9 @@ export function ThreadActionsProvider({
 
   const experiments = systemConfigQuery.data?.experiments ?? defaultExperiments;
   const desktopPopout = getDesktopPopoutApi();
-  const sendToPopout = useMemo<ThreadActionsContextValue["sendToPopout"]>(() => {
+  const sendToPopout = useMemo<
+    ThreadActionsContextValue["sendToPopout"]
+  >(() => {
     if (!experiments.popoutChat || desktopPopout === null) {
       return null;
     }

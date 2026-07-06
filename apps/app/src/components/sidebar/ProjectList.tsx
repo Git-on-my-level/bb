@@ -31,6 +31,7 @@ import {
   useConnectionAwareQueryState,
   type ConnectionAwareQueryStatus,
 } from "@/hooks/queries/connection-aware-query-state";
+import { isTransientReadError } from "@/hooks/queries/query-helpers";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { useReorderProject } from "@/hooks/mutations/project-mutations";
@@ -41,10 +42,10 @@ import {
   useUpdateThreadFolder,
 } from "@/hooks/mutations/thread-folder-mutations";
 import {
-  isLocalPathMissing,
-  useLocalPathExistence,
+  isHostPathMissing,
+  useHostPathExistence,
 } from "@/hooks/queries/host-path-queries";
-import { useHostDaemon } from "@/hooks/useHostDaemon";
+import { usePrimaryHost } from "@/hooks/queries/host-queries";
 import { useDialogState } from "@/hooks/useDialogState";
 import {
   getFolderArchivedRoutePath,
@@ -71,6 +72,7 @@ import {
 } from "@/components/dialogs/ConfirmDeleteDialog";
 import { CHROME_SECTION_LABEL_CLASS } from "@/components/ui/chromeStyleTokens";
 import { Icon, type IconName } from "@/components/ui/icon.js";
+import { LIST_HOVER_TRANSITION } from "@/components/ui/motion.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import {
   SidebarGroupContent,
@@ -138,6 +140,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip.js";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
   SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
@@ -223,16 +226,19 @@ interface LocalSourcePathTarget {
   projectId: string;
 }
 
-const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
+// Exported for the plugin nav entries, which render as sibling rows of the
+// Automations action and must match its look exactly.
+export const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
   SIDEBAR_ROW_BASE_CLASS,
+  LIST_HOVER_TRANSITION,
   SIDEBAR_STANDARD_ROW_PADDING_CLASS,
   SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   COARSE_POINTER_ROW_HEIGHT_CLASS,
-  "min-w-0 justify-start overflow-hidden font-normal ring-sidebar-ring focus-visible:ring-2 disabled:opacity-70 max-md:pointer-coarse:[&_svg]:size-5",
+  "min-w-0 cursor-pointer justify-start overflow-hidden font-normal ring-sidebar-ring focus-visible:ring-2 disabled:cursor-default disabled:opacity-70 max-md:pointer-coarse:[&_svg]:size-5",
 );
 
 const PROJECT_LIST_ACTION_ICON_BUTTON_CLASS = cn(
-  "inline-flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/85 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 disabled:opacity-50",
+  "inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/85 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 disabled:cursor-default disabled:opacity-50",
   COARSE_POINTER_ROW_HEIGHT_CLASS,
   "w-8",
 );
@@ -253,7 +259,8 @@ const PROJECT_LIST_SEARCH_CLOSE_BUTTON_CLASS =
   "h-6 w-6 shrink-0 rounded-md p-0 text-muted-foreground ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:ring-2 max-md:pointer-coarse:h-8 max-md:pointer-coarse:w-8";
 
 const PROJECT_LIST_SECTION_ACTION_BUTTON_CLASS = cn(
-  "inline-flex items-center justify-center rounded-md text-muted-foreground outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 disabled:opacity-50",
+  "inline-flex items-center justify-center rounded-md text-muted-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 disabled:opacity-50",
+  LIST_HOVER_TRANSITION,
   COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
 );
 
@@ -577,7 +584,6 @@ function ProjectListSectionIconButton({
       type="button"
       size="icon"
       variant="ghost"
-      title={undefined}
       aria-label={ariaLabel}
       disabled={disabled}
       className={PROJECT_LIST_SECTION_ACTION_BUTTON_CLASS}
@@ -674,6 +680,7 @@ function SidebarGroupMenuOption({
 
 interface SidebarSortMenuOptionProps {
   direction: SidebarSortDirection;
+  keepOpenOnSelect: boolean;
   label: string;
   selected: boolean;
   sort: SidebarChronologicalSort;
@@ -703,10 +710,10 @@ function SidebarDisplayMenuTrigger({
             variant="ghost"
             size="icon"
             aria-label={ariaLabel}
-            title={undefined}
             className={cn(
               "rounded-md p-0 text-muted-foreground",
               "data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-foreground",
+              LIST_HOVER_TRANSITION,
               COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
             )}
           >
@@ -723,6 +730,7 @@ function SidebarDisplayMenuTrigger({
 
 function SidebarSortMenuOption({
   direction,
+  keepOpenOnSelect,
   label,
   selected,
   sort,
@@ -731,7 +739,9 @@ function SidebarSortMenuOption({
   return (
     <DropdownMenuItem
       onSelect={(event) => {
-        event.preventDefault();
+        if (keepOpenOnSelect) {
+          event.preventDefault();
+        }
         onToggle(sort);
       }}
       className="flex items-center justify-between gap-3"
@@ -758,6 +768,7 @@ export function SidebarGroupOptionsMenu({
   open,
   onOpenChange,
 }: SidebarGroupOptionsMenuProps) {
+  const isCompactViewport = useIsCompactViewport();
   const [organizationMode, setOrganizationMode] = useAtom(
     sidebarOrganizationModeAtom,
   );
@@ -778,18 +789,22 @@ export function SidebarGroupOptionsMenu({
           Organize by
         </DropdownMenuLabel>
         <SidebarGroupMenuOption
-          label="Project"
+          label="Projects"
           selected={organizationMode === "project"}
           onSelect={(event) => {
-            event.preventDefault();
+            if (!isCompactViewport || organizationMode === "project") {
+              event.preventDefault();
+            }
             setOrganizationMode("project");
           }}
         />
         <SidebarGroupMenuOption
-          label="Folders"
+          label="Manually"
           selected={organizationMode === "chronological"}
           onSelect={(event) => {
-            event.preventDefault();
+            if (!isCompactViewport || organizationMode === "chronological") {
+              event.preventDefault();
+            }
             setOrganizationMode("chronological");
           }}
         />
@@ -802,6 +817,7 @@ export function SidebarSortOptionsMenu({
   open,
   onOpenChange,
 }: SidebarSortOptionsMenuProps) {
+  const isCompactViewport = useIsCompactViewport();
   const [chronologicalSort, setChronologicalSort] = useAtom(
     sidebarChronologicalSortAtom,
   );
@@ -839,6 +855,7 @@ export function SidebarSortOptionsMenu({
           sort="updated"
           selected={selectedSort === "updated"}
           direction={sortDirection}
+          keepOpenOnSelect={!isCompactViewport}
           onToggle={handleSortToggle}
         />
         <SidebarSortMenuOption
@@ -846,6 +863,7 @@ export function SidebarSortOptionsMenu({
           sort="created"
           selected={selectedSort === "created"}
           direction={sortDirection}
+          keepOpenOnSelect={!isCompactViewport}
           onToggle={handleSortToggle}
         />
         <SidebarSortMenuOption
@@ -853,6 +871,7 @@ export function SidebarSortOptionsMenu({
           sort="alpha"
           selected={selectedSort === "alpha"}
           direction={sortDirection}
+          keepOpenOnSelect={!isCompactViewport}
           onToggle={handleSortToggle}
         />
       </DropdownMenuContent>
@@ -899,6 +918,8 @@ interface SidebarThreadsSectionActionsProps {
 
 interface SidebarAllThreadsOverflowMenuProps {
   isCreatingFolder: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onNewFolder: () => void;
   onOpenArchivedThreads: () => void;
 }
@@ -939,19 +960,21 @@ function SidebarThreadsSectionActions({
 
 function SidebarAllThreadsOverflowMenu({
   isCreatingFolder,
+  open,
+  onOpenChange,
   onNewFolder,
   onOpenArchivedThreads,
 }: SidebarAllThreadsOverflowMenuProps) {
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <SidebarDisplayMenuTrigger
-        ariaLabel="All threads actions"
+        ariaLabel="All Threads actions"
         iconName="MoreHorizontal"
         tooltip="More actions"
       />
       <DropdownMenuContent
         align="end"
-        mobileTitle="All threads actions"
+        mobileTitle="All Threads actions"
         className="min-w-0"
       >
         <DropdownMenuItem disabled={isCreatingFolder} onSelect={onNewFolder}>
@@ -998,7 +1021,7 @@ function ProjectListNavigationLoadingRow({
   );
 }
 
-function TopLevelSidebarSection({
+export function TopLevelSidebarSection({
   label,
   children,
   actions,
@@ -1031,11 +1054,6 @@ function TopLevelSidebarSection({
     },
     [collapseControl],
   );
-  const handleSectionLabelClick = useCallback<
-    MouseEventHandler<HTMLDivElement>
-  >(() => {
-    collapseControl?.onToggleCollapsed();
-  }, [collapseControl]);
   const stopActionsClick = useCallback<MouseEventHandler<HTMLSpanElement>>(
     (event) => {
       event.stopPropagation();
@@ -1073,7 +1091,6 @@ function TopLevelSidebarSection({
           "rounded-md pr-1 transition-colors",
           dragBindings && !dragBindings.disabled && "select-none",
         )}
-        onClick={collapseControl ? handleSectionLabelClick : undefined}
         {...dragBindings?.attributes}
         {...(dragBindings?.listeners ?? {})}
       >
@@ -1083,22 +1100,27 @@ function TopLevelSidebarSection({
             actions && "pr-[7.5rem] max-md:pointer-coarse:pr-[9.75rem]",
           )}
         >
-          <span className="min-w-0 truncate">{label}</span>
+          <span className="min-w-0 truncate" title={label}>
+            {label}
+          </span>
           {/* Reserve room for the compact section action cluster on the right;
               coarse pointers need a little more. */}
           {collapseControl ? (
             <button
               type="button"
               aria-expanded={!collapseControl.isCollapsed}
+              data-sidebar-hover-actions-mobile={
+                SIDEBAR_HOVER_ACTIONS_MOBILE_ALWAYS_VALUE
+              }
               aria-label={
                 collapseControl.isCollapsed
                   ? `Expand ${label} section`
                   : `Collapse ${label} section`
               }
-              title={undefined}
               className={cn(
                 !collapseControl.isCollapsed && SIDEBAR_HOVER_ACTIONS_CLASS,
-                "relative z-20 inline-flex size-5 shrink-0 items-center justify-center rounded-md text-subtle-foreground outline-none ring-sidebar-ring transition-colors hover:text-sidebar-foreground focus-visible:ring-2",
+                "relative z-20 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-subtle-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2",
+                LIST_HOVER_TRANSITION,
               )}
               onClick={handleCollapseControlClick}
               onPointerDown={stopCollapseControlPointerDown}
@@ -1211,7 +1233,9 @@ export function ProjectListActionButtons({
             size="icon"
             variant="ghost"
             aria-label={
-              threadSearch.query.trim() ? "Clear search" : "Close search"
+              threadSearch.query.trim()
+                ? "Clear and close search"
+                : "Close search"
             }
             className={PROJECT_LIST_SEARCH_CLOSE_BUTTON_CLASS}
             onClick={handleSearchClose}
@@ -1313,6 +1337,13 @@ function ProjectListComponent({
     namesById.set(PERSONAL_PROJECT_ID, sidebarNavigation.personalProject.name);
     return namesById;
   }, [sidebarNavigation]);
+  const folderNamesById = useMemo(() => {
+    const namesById = new Map<string, string>();
+    for (const folder of folders) {
+      namesById.set(folder.id, folder.name);
+    }
+    return namesById;
+  }, [folders]);
   const threadById = useMemo(() => {
     const map = new Map<string, ThreadListEntry>();
     for (const thread of threads) {
@@ -1324,17 +1355,22 @@ function ProjectListComponent({
     hasResolvedData: projects !== undefined,
     isFetching: sidebarNavigationQuery.isFetching,
     isLoadingError: sidebarNavigationQuery.isLoadingError,
+    isRecoverableLoadingError: isTransientReadError(
+      sidebarNavigationQuery.error,
+    ),
   });
-  const { localDaemonHostId } = useHostDaemon();
+  const primaryHost = usePrimaryHost();
+  const workHostId =
+    primaryHost?.status === "connected" ? primaryHost.id : null;
   const { threadId: selectedThreadId } = useRouteState();
 
   const localSourceTargets = useMemo(() => {
-    if (!localDaemonHostId || !projects) return [];
+    if (!workHostId || !projects) return [];
     const targets: LocalSourcePathTarget[] = [];
     for (const project of projects) {
       const source = findLocalPathProjectSourceForHost(
         project.sources,
-        localDaemonHostId,
+        workHostId,
       );
       if (source) {
         targets.push({
@@ -1344,7 +1380,7 @@ function ProjectListComponent({
       }
     }
     return targets;
-  }, [localDaemonHostId, projects]);
+  }, [workHostId, projects]);
 
   const localSourcePathsByProjectId = useMemo(() => {
     const pathsByProjectId = new Map<string, string>();
@@ -1355,10 +1391,10 @@ function ProjectListComponent({
   }, [localSourceTargets]);
 
   const localPaths = useMemo(() => {
-    if (!localDaemonHostId) return [];
+    if (!workHostId) return [];
     return localSourceTargets.map((target) => target.path);
-  }, [localDaemonHostId, localSourceTargets]);
-  const pathExistence = useLocalPathExistence(localPaths);
+  }, [workHostId, localSourceTargets]);
+  const pathExistence = useHostPathExistence(workHostId, localPaths);
   const { isPending: isProjectReorderPending, mutate: reorderProjectMutate } =
     useReorderProject();
   const {
@@ -1584,11 +1620,14 @@ function ProjectListComponent({
     useState<SidebarDisplayOptionsMenuKind | null>(null);
   const [threadsDisplayOptionsMenuOpen, setThreadsDisplayOptionsMenuOpen] =
     useState<SidebarDisplayOptionsMenuKind | null>(null);
+  const [allThreadsOverflowMenuOpen, setAllThreadsOverflowMenuOpen] =
+    useState(false);
   const handleProjectsDisplayOptionsMenuOpenChange = useCallback(
     (menu: SidebarDisplayOptionsMenuKind, open: boolean) => {
       setProjectsDisplayOptionsMenuOpen(open ? menu : null);
       if (open) {
         setThreadsDisplayOptionsMenuOpen(null);
+        setAllThreadsOverflowMenuOpen(false);
       }
     },
     [],
@@ -1598,6 +1637,17 @@ function ProjectListComponent({
       setThreadsDisplayOptionsMenuOpen(open ? menu : null);
       if (open) {
         setProjectsDisplayOptionsMenuOpen(null);
+        setAllThreadsOverflowMenuOpen(false);
+      }
+    },
+    [],
+  );
+  const handleAllThreadsOverflowMenuOpenChange = useCallback(
+    (open: boolean) => {
+      setAllThreadsOverflowMenuOpen(open);
+      if (open) {
+        setProjectsDisplayOptionsMenuOpen(null);
+        setThreadsDisplayOptionsMenuOpen(null);
       }
     },
     [],
@@ -1806,7 +1856,7 @@ function ProjectListComponent({
           threadListStatesByProjectId.get(project.id) ??
           EMPTY_PROJECT_THREAD_LIST_STATE,
         isActive: false,
-        isLocalPathInvalid: isLocalPathMissing(
+        isLocalPathInvalid: isHostPathMissing(
           pathExistence,
           localSourcePathsByProjectId.get(project.id),
         ),
@@ -2012,6 +2062,8 @@ function ProjectListComponent({
       />
       <SidebarAllThreadsOverflowMenu
         isCreatingFolder={isCreateThreadFolderPending}
+        open={allThreadsOverflowMenuOpen}
+        onOpenChange={handleAllThreadsOverflowMenuOpenChange}
         onNewFolder={handleOpenCreateFolderDialog}
         onOpenArchivedThreads={handleOpenProjectlessArchivedThreads}
       />
@@ -2048,10 +2100,13 @@ function ProjectListComponent({
       onToggleEnvironmentCollapsed={toggleEnvironmentCollapsed}
       renderAllThreadsSection={(content) => (
         <TopLevelSidebarSection
-          label="All threads"
+          label="All Threads"
           actions={allThreadsSectionActions}
-          actionsOpen={projectsDisplayOptionsMenuOpen !== null}
-          actionsAlwaysVisible
+          actionsOpen={
+            projectsDisplayOptionsMenuOpen !== null ||
+            allThreadsOverflowMenuOpen
+          }
+          actionsMobileAlways
           collapseControl={{
             isCollapsed: collapsedSidebarSectionIds.has("threads"),
             onToggleCollapsed: () => toggleSidebarSectionCollapsed("threads"),
@@ -2065,7 +2120,7 @@ function ProjectListComponent({
           label="Folders"
           actions={folderSectionActions}
           actionsOpen={projectsDisplayOptionsMenuOpen !== null}
-          actionsAlwaysVisible
+          actionsMobileAlways
         >
           {content}
         </TopLevelSidebarSection>
@@ -2131,9 +2186,11 @@ function ProjectListComponent({
           onActiveIndexChange={threadSearch.onActiveIndexChange}
           onNavigationItemsChange={threadSearch.onNavigationItemsChange}
           onSelect={threadSearch.onSelectItem}
+          folderNamesById={folderNamesById}
           projectNamesById={projectNamesById}
           query={threadSearch.query}
           recentThreads={threads}
+          showFolderLabels={isFolderOrganizationMode}
         />
       </ProjectListShell>
     );
@@ -2194,7 +2251,7 @@ function ProjectListComponent({
                   disabled={visibleSidebarSectionOrder.length < 2}
                   actions={projectsSectionActions}
                   actionsOpen={projectsDisplayOptionsMenuOpen !== null}
-                  actionsAlwaysVisible
+                  actionsMobileAlways
                   collapseControl={{
                     isCollapsed: collapsedSidebarSectionIds.has("projects"),
                     onToggleCollapsed: () =>

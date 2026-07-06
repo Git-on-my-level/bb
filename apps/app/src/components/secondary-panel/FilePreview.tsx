@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,23 +11,21 @@ import type { FileOptions } from "@pierre/diffs/react";
 import type { SelectedLineRange, SupportedLanguages } from "@pierre/diffs";
 import type { UrlTransform } from "react-markdown";
 import { Button } from "@/components/ui/button.js";
-import {
-  COARSE_POINTER_TEXT_SM_CLASS,
-} from "@/components/ui/coarse-pointer-sizing.js";
+import { usePierreLineSelectionActions } from "@/components/git-diff/PierreLineSelectionActions.js";
+import { COARSE_POINTER_TEXT_SM_CLASS } from "@/components/ui/coarse-pointer-sizing.js";
 import { EmptyStatePanel } from "@/components/ui/empty-state.js";
 import { CopyButton } from "@/components/ui/copy-button.js";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu.js";
 import { Icon } from "@/components/ui/icon.js";
 import { OpenInEditorButton } from "@/components/ui/open-in-editor-button.js";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing.js";
 import { MarkdownPreview } from "@/components/ui/markdown-preview.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip.js";
 import { TruncateStart } from "@/components/ui/truncate-start.js";
 import { usePreferredTheme } from "@/hooks/useTheme";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
@@ -40,6 +39,7 @@ import {
   type CodeOverflowModeChangeHandler,
 } from "@/lib/code-overflow-mode";
 import { cn } from "@/lib/utils";
+import { SecondaryPanelSelectionActions } from "./SecondaryPanelSelectionActions.js";
 
 export interface FilePreviewFile {
   cacheKey?: string;
@@ -83,6 +83,7 @@ export interface FilePreviewProps {
   path: string;
   copyPath?: string | null;
   headerMode?: FilePreviewHeaderMode;
+  onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
   markdownLinkRouting?: MarkdownLinkRouting;
   statusLabel?: WorkspaceFilePreviewStatusLabel | null;
@@ -94,10 +95,12 @@ interface FilePreviewBodyProps {
   lineOverflowMode: CodeOverflowMode;
   viewMode: FilePreviewViewMode;
   markdownLinkRouting?: MarkdownLinkRouting;
+  onSelectionAddToChat?: (text: string) => void;
 }
 
 interface HtmlFilePreviewBodyProps {
   lineOverflowMode: CodeOverflowMode;
+  onSelectionAddToChat?: (text: string) => void;
   state: Extract<FilePreviewState, { kind: "html" }>;
   viewMode: FilePreviewViewMode;
 }
@@ -116,15 +119,20 @@ interface FilePreviewHeaderProps {
   onViewModeChange: (mode: FilePreviewViewMode) => void;
 }
 
-interface FilePreviewActionsMenuProps {
-  rawContents: string | null;
+interface FilePreviewLineWrapButtonProps {
   showLineOverflowToggle: boolean;
   lineOverflowMode: CodeOverflowMode;
   onLineOverflowModeChange: CodeOverflowModeChangeHandler;
 }
 
+interface FilePreviewPathProps {
+  path: string;
+  copyPath: string | null;
+}
+
 interface MarkdownFilePreviewProps {
   file: FilePreviewFile;
+  onSelectionAddToChat?: (text: string) => void;
   urlTransform?: UrlTransform;
   markdownLinkRouting?: MarkdownLinkRouting;
 }
@@ -148,6 +156,8 @@ interface FilePreviewCodeProps {
   file: FilePreviewFile;
   lineOverflowMode: CodeOverflowMode;
   lineRange: FilePreviewLineRange | null;
+  onSelectionAddToChat?: (text: string) => void;
+  path: string;
 }
 
 interface FilePreviewWorkerPoolStats {
@@ -229,8 +239,18 @@ function getToggleAriaLabel(kind: FilePreviewToggleKind): string {
   return kind === "html" ? "HTML view mode" : "Markdown view mode";
 }
 
-function getRawToggleTitle(kind: FilePreviewToggleKind): string {
-  return kind === "html" ? "HTML source" : "Markdown source";
+function getFileContentsCopyLabel(kind: FilePreviewToggleKind | null): string {
+  if (kind === "markdown") {
+    return "Copy markdown";
+  }
+  if (kind === "html") {
+    return "Copy HTML source";
+  }
+  return "Copy file contents";
+}
+
+function getLineWrapToggleLabel(lineOverflowMode: CodeOverflowMode): string {
+  return lineOverflowMode === "wrap" ? "Disable line wrap" : "Wrap lines";
 }
 
 function getFilePreviewLineRange(
@@ -279,6 +299,7 @@ export function FilePreview({
   path,
   copyPath = null,
   headerMode = "file",
+  onSelectionAddToChat,
   onOpenInEditor,
   markdownLinkRouting,
   statusLabel = null,
@@ -357,6 +378,7 @@ export function FilePreview({
         lineOverflowMode={lineOverflowMode}
         viewMode={bodyViewMode}
         markdownLinkRouting={markdownLinkRouting}
+        onSelectionAddToChat={onSelectionAddToChat}
       />
     </div>
   );
@@ -368,6 +390,7 @@ function FilePreviewBody({
   lineOverflowMode,
   viewMode,
   markdownLinkRouting,
+  onSelectionAddToChat,
 }: FilePreviewBodyProps) {
   if (state.kind === "loading") {
     return <FilePreviewLoading />;
@@ -405,6 +428,7 @@ function FilePreviewBody({
     return (
       <HtmlFilePreviewBody
         lineOverflowMode={lineOverflowMode}
+        onSelectionAddToChat={onSelectionAddToChat}
         state={state}
         viewMode={viewMode}
       />
@@ -416,6 +440,7 @@ function FilePreviewBody({
         file={state.file}
         urlTransform={state.markdownUrlTransform}
         markdownLinkRouting={markdownLinkRouting}
+        onSelectionAddToChat={onSelectionAddToChat}
       />
     );
   }
@@ -424,6 +449,8 @@ function FilePreviewBody({
       file={state.file}
       lineOverflowMode={lineOverflowMode}
       lineRange={state.lineRange ?? null}
+      onSelectionAddToChat={onSelectionAddToChat}
+      path={path}
     />
   );
 }
@@ -441,8 +468,8 @@ function FilePreviewHeader({
   viewMode,
   onViewModeChange,
 }: FilePreviewHeaderProps) {
-  const showActionsMenu = showLineOverflowToggle || rawContents !== null;
-  const showHeaderControls = showActionsMenu || toggleKind !== null;
+  const showHeaderControls = showLineOverflowToggle || toggleKind !== null;
+  const copyFileContentsLabel = getFileContentsCopyLabel(toggleKind);
 
   return (
     // The wrapper carries an opaque `bg-background` base so the translucent
@@ -455,15 +482,7 @@ function FilePreviewHeader({
             name="File"
             className="size-3.5 shrink-0 text-subtle-foreground"
           />
-          <TruncateStart
-            className={cn(
-              "min-w-0 font-mono font-medium leading-5 text-file-accent",
-              COARSE_POINTER_TEXT_SM_CLASS,
-            )}
-            title={path}
-          >
-            {path}
-          </TruncateStart>
+          <FilePreviewPath path={path} copyPath={copyPath} />
           {statusLabel === null ? null : (
             <span
               className={cn(
@@ -474,27 +493,38 @@ function FilePreviewHeader({
               ({statusLabel})
             </span>
           )}
-          {copyPath === null ? null : (
-            <CopyButton
-              text={copyPath}
-              label="Copy file path"
-              className="shrink-0 rounded-md hover:bg-state-hover hover:text-foreground"
-            />
-          )}
-          {onOpenInEditor ? (
-            <OpenInEditorButton onClick={() => onOpenInEditor(path)} />
-          ) : null}
+          <TooltipProvider delayDuration={300}>
+            {rawContents === null ? null : (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <CopyButton
+                    text={rawContents}
+                    label={copyFileContentsLabel}
+                    className="shrink-0 rounded-md hover:bg-state-hover hover:text-foreground"
+                  />
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {copyFileContentsLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {onOpenInEditor ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <OpenInEditorButton onClick={() => onOpenInEditor(path)} />
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Open in editor</TooltipContent>
+              </Tooltip>
+            ) : null}
+          </TooltipProvider>
         </div>
         {showHeaderControls ? (
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            {showActionsMenu ? (
-              <FilePreviewActionsMenu
-                rawContents={rawContents}
-                showLineOverflowToggle={showLineOverflowToggle}
-                lineOverflowMode={lineOverflowMode}
-                onLineOverflowModeChange={onLineOverflowModeChange}
-              />
-            ) : null}
+            <FilePreviewLineWrapButton
+              showLineOverflowToggle={showLineOverflowToggle}
+              lineOverflowMode={lineOverflowMode}
+              onLineOverflowModeChange={onLineOverflowModeChange}
+            />
             {toggleKind !== null ? (
               <div
                 className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5"
@@ -511,7 +541,6 @@ function FilePreviewHeader({
                   )}
                   onClick={() => onViewModeChange("preview")}
                   aria-pressed={viewMode === "preview"}
-                  title="Rendered preview"
                 >
                   Preview
                 </Button>
@@ -525,7 +554,6 @@ function FilePreviewHeader({
                   )}
                   onClick={() => onViewModeChange("source")}
                   aria-pressed={viewMode === "source"}
-                  title={getRawToggleTitle(toggleKind)}
                 >
                   Raw
                 </Button>
@@ -538,64 +566,84 @@ function FilePreviewHeader({
   );
 }
 
-function FilePreviewActionsMenu({
-  rawContents,
-  showLineOverflowToggle,
-  lineOverflowMode,
-  onLineOverflowModeChange,
-}: FilePreviewActionsMenuProps) {
+function FilePreviewPath({ path, copyPath }: FilePreviewPathProps) {
+  const copyTarget = copyPath ?? path;
+  const label = "Copy file path";
+  const className = cn(
+    "min-w-0 font-mono font-medium leading-5 text-file-accent",
+    COARSE_POINTER_TEXT_SM_CLASS,
+  );
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={cn(
-            FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
-            "text-muted-foreground",
-          )}
-          aria-label="File preview actions"
-          title="File preview actions"
-        >
-          <Icon name="MoreHorizontal" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        mobileTitle="File preview actions"
-        className="w-44"
-      >
-        {showLineOverflowToggle ? (
-          <DropdownMenuCheckboxItem
-            checked={lineOverflowMode === "wrap"}
-            onCheckedChange={(checked) =>
-              onLineOverflowModeChange(checked ? "wrap" : "scroll")
-            }
-            textValue="Wrap"
-          >
-            Wrap
-          </DropdownMenuCheckboxItem>
-        ) : null}
-        {rawContents === null ? null : (
-          <DropdownMenuItem
-            onSelect={() => {
-              void copyToClipboardWithToast(rawContents, {
-                successMessage: null,
-                errorMessage: "Failed to copy",
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              className,
+              "cursor-pointer rounded-sm text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            )}
+            aria-label={label}
+            onClick={() => {
+              void copyToClipboardWithToast(copyTarget, {
+                successMessage: "File path copied",
+                errorMessage: "Failed to copy file path",
               });
             }}
           >
-            Copy raw file
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+            <TruncateStart>{path}</TruncateStart>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function FilePreviewLineWrapButton({
+  showLineOverflowToggle,
+  lineOverflowMode,
+  onLineOverflowModeChange,
+}: FilePreviewLineWrapButtonProps) {
+  if (!showLineOverflowToggle) {
+    return null;
+  }
+
+  const label = getLineWrapToggleLabel(lineOverflowMode);
+
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(
+              FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+              "text-muted-foreground",
+            )}
+            aria-label={label}
+            aria-pressed={lineOverflowMode === "wrap"}
+            onClick={() => {
+              onLineOverflowModeChange(
+                lineOverflowMode === "wrap" ? "scroll" : "wrap",
+              );
+            }}
+          >
+            <Icon name="TextWrap" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 
 function HtmlFilePreviewBody({
   lineOverflowMode,
+  onSelectionAddToChat,
   state,
   viewMode,
 }: HtmlFilePreviewBodyProps) {
@@ -620,6 +668,8 @@ function HtmlFilePreviewBody({
           file={state.file}
           lineOverflowMode={lineOverflowMode}
           lineRange={state.lineRange}
+          onSelectionAddToChat={onSelectionAddToChat}
+          path={state.file.name}
         />
       </div>
     </>
@@ -628,6 +678,7 @@ function HtmlFilePreviewBody({
 
 function MarkdownFilePreview({
   file,
+  onSelectionAddToChat,
   urlTransform,
   markdownLinkRouting,
 }: MarkdownFilePreviewProps) {
@@ -636,14 +687,19 @@ function MarkdownFilePreview({
     // viewer reads as a distinct surface from the white chat — one tonal step
     // lighter than the recessed header (matching the raised-body / recessed-
     // header pairing used elsewhere in this panel).
-    <div className="flex-auto bg-surface-raised px-4 py-4">
-      <MarkdownPreview
-        allowHtml
-        content={file.contents}
-        urlTransform={urlTransform}
-        linkRouting={markdownLinkRouting}
-      />
-    </div>
+    <SecondaryPanelSelectionActions
+      className="contents"
+      onSelectionAddToChat={onSelectionAddToChat}
+    >
+      <div className="flex-auto bg-surface-raised px-4 py-4">
+        <MarkdownPreview
+          allowHtml
+          content={file.contents}
+          urlTransform={urlTransform}
+          linkRouting={markdownLinkRouting}
+        />
+      </div>
+    </SecondaryPanelSelectionActions>
   );
 }
 
@@ -755,6 +811,38 @@ function findPreviewTargetLine(
   return null;
 }
 
+function formatLineRange(startLineNumber: number, endLineNumber: number) {
+  return startLineNumber === endLineNumber
+    ? String(startLineNumber)
+    : `${startLineNumber}-${endLineNumber}`;
+}
+
+function buildFilePreviewLineSelectionText({
+  contents,
+  path,
+  range,
+}: {
+  contents: string;
+  path: string;
+  range: SelectedLineRange;
+}): string | null {
+  const startLineNumber = Math.max(1, Math.min(range.start, range.end));
+  const endLineNumber = Math.max(
+    startLineNumber,
+    Math.max(range.start, range.end),
+  );
+  const lines = contents.split(/\r\n|\n|\r/);
+  const selectedLines = lines.slice(startLineNumber - 1, endLineNumber);
+  if (selectedLines.length === 0) {
+    return null;
+  }
+  const selectedText = selectedLines.join("\n").trimEnd();
+  if (selectedText.trim().length === 0) {
+    return null;
+  }
+  return `${path}:${formatLineRange(startLineNumber, endLineNumber)}\n${selectedText}`;
+}
+
 function FilePreviewLoading() {
   return (
     <div className="space-y-2 px-4 pt-4" aria-busy>
@@ -780,6 +868,8 @@ function FilePreviewCode({
   file,
   lineOverflowMode,
   lineRange,
+  onSelectionAddToChat,
+  path,
 }: FilePreviewCodeProps) {
   const preferredTheme = usePreferredTheme();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -788,25 +878,61 @@ function FilePreviewCode({
   const [workerPoolStats, setWorkerPoolStats] =
     useState<FilePreviewWorkerPoolStats | null>(null);
   const [, rerenderAfterWorkerPoolChange] = useState(0);
+  const buildSelectionText = useCallback(
+    (range: SelectedLineRange) =>
+      buildFilePreviewLineSelectionText({
+        contents: file.contents,
+        path,
+        range,
+      }),
+    [file.contents, path],
+  );
+  const lineSelectionActions = usePierreLineSelectionActions({
+    buildSelectionText,
+    containerRef,
+    enabled: onSelectionAddToChat !== undefined,
+    onSelectionAddToChat,
+  });
   const options = useMemo<FileOptions<undefined>>(
     () => ({
       themeType: preferredTheme,
       overflow: lineOverflowMode,
       disableFileHeader: true,
-      enableLineSelection: lineRange !== null,
+      enableGutterUtility: onSelectionAddToChat !== undefined,
+      enableLineSelection:
+        lineRange !== null || onSelectionAddToChat !== undefined,
+      lineHoverHighlight:
+        onSelectionAddToChat === undefined ? "disabled" : "number",
+      onGutterUtilityClick:
+        onSelectionAddToChat === undefined
+          ? undefined
+          : lineSelectionActions.onGutterUtilityClick,
+      onLineSelectionChange: lineSelectionActions.onLineSelectionChange,
+      onLineSelectionEnd: lineSelectionActions.onLineSelectionEnd,
+      onLineSelectionStart: lineSelectionActions.onLineSelectionStart,
     }),
-    [lineOverflowMode, lineRange, preferredTheme],
+    [
+      lineOverflowMode,
+      lineRange,
+      lineSelectionActions.onGutterUtilityClick,
+      lineSelectionActions.onLineSelectionChange,
+      lineSelectionActions.onLineSelectionEnd,
+      lineSelectionActions.onLineSelectionStart,
+      onSelectionAddToChat,
+      preferredTheme,
+    ],
   );
-  const selectedLines = useMemo<SelectedLineRange | null>(
-    () =>
-      lineRange === null
-        ? null
-        : {
-            start: lineRange.startLineNumber,
-            end: lineRange.endLineNumber,
-          },
-    [lineRange],
-  );
+  const selectedLines = useMemo<SelectedLineRange | null>(() => {
+    if (lineSelectionActions.selectedRange !== null) {
+      return lineSelectionActions.selectedRange;
+    }
+    return lineRange === null
+      ? null
+      : {
+          start: lineRange.startLineNumber,
+          end: lineRange.endLineNumber,
+        };
+  }, [lineRange, lineSelectionActions.selectedRange]);
   const targetLineNumber = selectedLines?.start ?? null;
 
   useEffect(() => {
@@ -844,7 +970,9 @@ function FilePreviewCode({
   // once the cache entry for this exact file appears so syntax highlighting
   // replaces the plain-text fallback.
   const workerHighlightCacheState =
-    workerPool?.getFileResultCache(file) !== undefined ? "highlighted" : "plain";
+    workerPool?.getFileResultCache(file) !== undefined
+      ? "highlighted"
+      : "plain";
 
   useEffect(() => {
     const cleanupContainer = containerRef.current;
@@ -904,6 +1032,9 @@ function FilePreviewCode({
       className="min-h-0 flex-auto"
       style={FILE_PREVIEW_VIEW_STYLE}
       data-file-preview-line-number={targetLineNumber ?? undefined}
+      onPointerDownCapture={lineSelectionActions.onPointerDownCapture}
+      onPointerMoveCapture={lineSelectionActions.onPointerMoveCapture}
+      onPointerUpCapture={lineSelectionActions.onPointerUpCapture}
     >
       <PierreFile
         key={`${file.cacheKey ?? file.name}:${workerHighlightCacheState}`}
@@ -912,6 +1043,7 @@ function FilePreviewCode({
         options={options}
         selectedLines={selectedLines}
       />
+      {lineSelectionActions.menu}
     </div>
   );
 }

@@ -8,7 +8,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { Link, useLocation } from "react-router-dom";
+import { Link, matchPath, useLocation } from "react-router-dom";
 import type { ProjectResponse } from "@bb/server-contract";
 import { Icon } from "@/components/ui/icon.js";
 import {
@@ -22,8 +22,10 @@ import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useAutomationDetail } from "@/hooks/queries/automation-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import {
+  getLatestPendingInteraction,
   useThread,
   useThreadDetailBootstrap,
+  useThreadPendingInteractions,
 } from "@/hooks/queries/thread-queries";
 import { useRouteState } from "@/hooks/useRouteState";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
@@ -32,7 +34,12 @@ import { cn } from "@/lib/utils";
 import { ProjectPathDialog } from "@/components/dialogs/ProjectPathDialog";
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
+import {
+  PluginPanelHeaderActions,
+  PluginPanelHeaderCenter,
+} from "@/components/plugin/PluginPanelHeader";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
+import { usePluginSlots, type PluginNavPanelSlot } from "@/lib/plugin-slots";
 import { createLocalStorageSyncStorage } from "@/lib/browser-storage";
 import {
   BROWSER_SIDEBAR_TRIGGER_INSET_CLASS,
@@ -51,13 +58,13 @@ import {
   getProjectSettingsRoutePath,
   getRootComposeRoutePath,
   isProjectlessProjectId,
+  PLUGIN_PANEL_ROUTE_PATH,
 } from "@/lib/route-paths";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
-import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { IframeDragGuardOverlay } from "@/lib/iframe-drag-guard";
 import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import { useFaviconBadge } from "@/lib/favicon-color-preference";
-import { getFaviconUnreadCount } from "./faviconUnreadCount";
+import { shouldShowFaviconAttentionDot } from "./faviconAttentionDot";
 
 const SIDEBAR_WIDTH_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_KEY = "bb.sidebar.open";
@@ -234,6 +241,12 @@ interface AppHeaderProps {
   isSettingsView: boolean;
   projectId?: string;
   project?: ProjectResponse;
+  /** Registered navPanel when this is a plugin panel route (design §5.2):
+   * the shared header shows plugin logo + title, plus the registration's
+   * `headerContent` as the actions. */
+  pluginPanel?: PluginNavPanelSlot;
+  /** The panel route's splat remainder ("" at the panel root). */
+  pluginPanelSubPath?: string;
   meta: {
     title: string;
     subtitle?: string;
@@ -248,6 +261,8 @@ function AppHeader({
   isSettingsView,
   projectId,
   project,
+  pluginPanel,
+  pluginPanelSubPath,
   meta,
 }: AppHeaderProps) {
   const headerBreadcrumbs = meta.breadcrumbs;
@@ -259,7 +274,9 @@ function AppHeader({
     Boolean(headerTitle) ||
     Boolean(meta.subtitle);
 
-  const center = hasCenterContent ? (
+  const center = pluginPanel ? (
+    <PluginPanelHeaderCenter panel={pluginPanel} />
+  ) : hasCenterContent ? (
     <div className="min-w-0 flex-1">
       {headerBreadcrumbs ? (
         <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
@@ -310,8 +327,12 @@ function AppHeader({
     </div>
   ) : null;
 
-  const actions =
-    usesProjectChromeStyle &&
+  const actions = pluginPanel ? (
+    <PluginPanelHeaderActions
+      panel={pluginPanel}
+      subPath={pluginPanelSubPath ?? ""}
+    />
+  ) : usesProjectChromeStyle &&
     projectId &&
     !isProjectlessProjectId(projectId) ? (
       <>
@@ -326,7 +347,6 @@ function AppHeader({
           )}
           aria-label="Project settings"
           aria-current={isSettingsView ? "page" : undefined}
-          title="Project settings"
         >
           <Icon name="Settings" />
         </Link>
@@ -341,7 +361,6 @@ function AppHeader({
           )}
           aria-label="Archived threads"
           aria-current={isArchivedView ? "page" : undefined}
-          title="Archived threads"
         >
           <Icon name="Archive" />
         </Link>
@@ -390,6 +409,17 @@ export function AppLayout({ children }: AppLayoutProps) {
   const archivedFolderId = isArchivedView
     ? new URLSearchParams(location.search).get("folderId")
     : null;
+  // Plugin panel routes ride the shared header (design §5.2): logo + panel
+  // title in the center, the registration's headerContent as the actions.
+  const { navPanels } = usePluginSlots();
+  const pluginPanelMatch = matchPath(PLUGIN_PANEL_ROUTE_PATH, location.pathname);
+  const pluginPanel = pluginPanelMatch
+    ? navPanels.find(
+        (candidate) =>
+          candidate.pluginId === pluginPanelMatch.params.pluginId &&
+          candidate.path === pluginPanelMatch.params.panelPath,
+      )
+    : undefined;
   const sidebarNavigationQuery = useSidebarNavigation();
   const projects = useMemo(
     () => sidebarNavigationQuery.data?.projects.map(stripProjectThreads),
@@ -413,7 +443,6 @@ export function AppLayout({ children }: AppLayoutProps) {
     threadDetailBootstrapQuery.isSuccess || threadDetailBootstrapQuery.isError;
   const [sidebarWidth, setSidebarWidth] = useAtom(sidebarWidthAtom);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
-  const setRootComposeProjectId = useSetRootComposeProjectId();
   const providerRef = useRef<HTMLDivElement>(null);
   const startXRef = useRef(0);
   const startWidthRef = useRef(0);
@@ -447,10 +476,6 @@ export function AppLayout({ children }: AppLayoutProps) {
     : threadId
       ? `Thread ${threadId.slice(0, 8)}`
       : "Thread";
-  useEffect(() => {
-    if (!thread?.projectId) return;
-    setRootComposeProjectId(thread.projectId);
-  }, [setRootComposeProjectId, thread?.projectId]);
   const meta = isThreadView
     ? {
         title: thread ? getThreadDisplayTitle(thread) : "Thread",
@@ -510,6 +535,9 @@ export function AppLayout({ children }: AppLayoutProps) {
     if (isThreadView) {
       return threadDisplayTitle;
     }
+    if (pluginPanel) {
+      return pluginPanel.title;
+    }
     if (isAutomationDetailView) {
       return `${automationName} · Automations`;
     }
@@ -530,12 +558,26 @@ export function AppLayout({ children }: AppLayoutProps) {
     const routeTitle = routeTitles[location.pathname]?.title;
     return routeTitle && routeTitle.length > 0 ? routeTitle : "BB";
   })();
-  const unreadCount = getFaviconUnreadCount({
+  // The sidebar list omits archived threads and side chats, so it can't answer
+  // whether the currently-viewed thread is blocked on input. Read the current
+  // thread's pending interactions directly (the thread view already warms this
+  // cache) so an in-view thread waiting on the user always lights the favicon,
+  // mirroring how the in-view unread signal covers every thread kind.
+  const currentThreadPendingInteractionsQuery = useThreadPendingInteractions(
+    threadId ?? "",
+    { enabled: isThreadView && Boolean(threadId) },
+  );
+  const currentThreadHasPendingInteraction =
+    getLatestPendingInteraction(currentThreadPendingInteractionsQuery.data) !==
+    null;
+  const faviconBadge = shouldShowFaviconAttentionDot({
+    currentThreadHasPendingInteraction,
     isThreadView,
     sidebarThreads,
     thread,
-  });
-  const faviconBadge = unreadCount > 0 ? "unread" : "none";
+  })
+    ? "unread"
+    : "none";
   useFaviconBadge(faviconBadge);
 
   const handleResizeMouseDown = useCallback(
@@ -647,6 +689,8 @@ export function AppLayout({ children }: AppLayoutProps) {
                   isSettingsView={isSettingsView}
                   projectId={projectId}
                   project={project}
+                  pluginPanel={pluginPanel}
+                  pluginPanelSubPath={pluginPanelMatch?.params["*"] ?? ""}
                   meta={meta}
                 />
               ) : null}
@@ -661,6 +705,7 @@ export function AppLayout({ children }: AppLayoutProps) {
           target={quickCreateProject.projectPathDialog.target}
           pending={quickCreateProject.isCreating}
           platform={quickCreateProject.platform}
+          hostId={quickCreateProject.hostId}
           hostName={quickCreateProject.hostName}
           onOpenChange={quickCreateProject.projectPathDialog.onOpenChange}
           onSubmit={quickCreateProject.submitProjectPath}

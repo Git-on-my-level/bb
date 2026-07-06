@@ -1,9 +1,6 @@
 import {
   memo,
   useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
   useState,
   type CSSProperties,
   type MouseEventHandler,
@@ -42,14 +39,14 @@ import {
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { cn } from "@/lib/utils";
+import { LIST_HOVER_TRANSITION } from "@/components/ui/motion.js";
 import {
   SIDEBAR_ROW_BASE_CLASS,
   SIDEBAR_ROW_GLYPH_SLOT_CLASS,
   SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   SIDEBAR_ROW_SELECTED_STATE_CLASS,
-  SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
+  SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
   SIDEBAR_SUCCESS_STATUS_DOT_CLASS,
-  SIDEBAR_SUCCESS_STATUS_ICON_SIZE_CLASS,
   SIDEBAR_WORKING_STATUS_COLOR_CLASS,
   getSidebarThreadRowPaddingLeft,
   type SidebarUnreadDotTone,
@@ -100,6 +97,7 @@ interface ThreadRowContainerArgs {
   className: string;
   dragBindings?: SidebarSortableDragBindings;
   onClickCapture?: ThreadRowClickCaptureHandler;
+  showDragCursor: boolean;
   stickyLevel?: number;
   style: CSSProperties;
 }
@@ -125,16 +123,22 @@ function renderThreadRowContainer({
   className,
   dragBindings,
   onClickCapture,
+  showDragCursor,
   stickyLevel,
   style,
 }: ThreadRowContainerArgs) {
+  // Draggable rows show a grab cursor over the whole row.
+  const containerClassName = cn(
+    className,
+    showDragCursor && "cursor-grab active:cursor-grabbing",
+  );
   if (stickyLevel !== undefined) {
     return (
       <SidebarStickyTier
         ref={dragBindings?.setActivatorNodeRef}
         tier="parent"
         level={stickyLevel}
-        className={className}
+        className={containerClassName}
         style={style}
         {...dragBindings?.attributes}
         {...(dragBindings?.listeners ?? {})}
@@ -148,7 +152,7 @@ function renderThreadRowContainer({
   return (
     <div
       ref={dragBindings?.setActivatorNodeRef}
-      className={className}
+      className={containerClassName}
       style={style}
       {...dragBindings?.attributes}
       {...(dragBindings?.listeners ?? {})}
@@ -164,7 +168,6 @@ interface ThreadStatusGlyphProps {
   isBusy: boolean;
   isWorkflowActive: boolean;
   showUnreadBadge: boolean;
-  successAnimationKey?: number | null;
   unreadBadgeTone: SidebarUnreadDotTone;
 }
 
@@ -172,59 +175,11 @@ interface ThreadUnreadBadgeLabelArgs {
   tone: SidebarUnreadDotTone;
 }
 
-const THREAD_SUCCESS_CHECK_DELAY_MS = 1200;
-
-function ThreadSuccessStatusGlyph({
-  animate,
-  label,
-}: {
-  animate: boolean;
-  label: string;
-}) {
-  const [showCheck, setShowCheck] = useState(animate);
-
-  useEffect(() => {
-    if (!animate) {
-      setShowCheck(false);
-      return;
-    }
-
-    setShowCheck(true);
-    const timeoutId = window.setTimeout(
-      () => setShowCheck(false),
-      THREAD_SUCCESS_CHECK_DELAY_MS,
-    );
-    return () => window.clearTimeout(timeoutId);
-  }, [animate]);
-
-  if (showCheck) {
-    return (
-      <Icon
-        name="CircleCheck"
-        className={cn(
-          SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
-          SIDEBAR_SUCCESS_STATUS_ICON_SIZE_CLASS,
-        )}
-        aria-label={label}
-      />
-    );
-  }
-
-  return (
-    <span
-      className={SIDEBAR_SUCCESS_STATUS_DOT_CLASS}
-      aria-label={label}
-      title={label}
-    />
-  );
-}
-
 export function ThreadStatusGlyph({
   hasPendingInteraction,
   isBusy,
   isWorkflowActive,
   showUnreadBadge,
-  successAnimationKey = null,
   unreadBadgeTone,
 }: ThreadStatusGlyphProps) {
   if (showUnreadBadge && unreadBadgeTone === "error") {
@@ -255,7 +210,11 @@ export function ThreadStatusGlyph({
     return (
       <Icon
         name="Workflow"
-        className={cn("text-muted-foreground", COARSE_POINTER_ICON_SIZE_CLASS)}
+        className={cn(
+          "animate-shine-icon",
+          SIDEBAR_WORKING_STATUS_COLOR_CLASS,
+          COARSE_POINTER_ICON_SIZE_CLASS,
+        )}
         aria-label="Workflow running"
       />
     );
@@ -264,11 +223,7 @@ export function ThreadStatusGlyph({
   if (showUnreadBadge) {
     const label = getThreadUnreadBadgeLabel({ tone: unreadBadgeTone });
     return (
-      <ThreadSuccessStatusGlyph
-        key={successAnimationKey ?? "settled"}
-        animate={successAnimationKey !== null}
-        label={label}
-      />
+      <span className={SIDEBAR_SUCCESS_STATUS_DOT_CLASS} aria-label={label} />
     );
   }
 
@@ -297,35 +252,11 @@ function getThreadUnreadBadgeLabel({
 
 type ThreadTrailingIndicatorProps = ThreadStatusGlyphProps;
 
-function useUnreadSuccessAnimationKey(
-  showUnreadSuccess: boolean,
-): number | null {
-  const previousShowUnreadSuccessRef = useRef(showUnreadSuccess);
-  const [animationKey, setAnimationKey] = useState<number | null>(null);
-
-  useLayoutEffect(() => {
-    const previousShowUnreadSuccess = previousShowUnreadSuccessRef.current;
-    previousShowUnreadSuccessRef.current = showUnreadSuccess;
-
-    if (showUnreadSuccess && !previousShowUnreadSuccess) {
-      setAnimationKey((current) => (current ?? 0) + 1);
-      return;
-    }
-
-    if (!showUnreadSuccess && animationKey !== null) {
-      setAnimationKey(null);
-    }
-  }, [animationKey, showUnreadSuccess]);
-
-  return showUnreadSuccess ? animationKey : null;
-}
-
 function ThreadTrailingIndicator({
   hasPendingInteraction,
   isBusy,
   isWorkflowActive,
   showUnreadBadge,
-  successAnimationKey,
   unreadBadgeTone,
 }: ThreadTrailingIndicatorProps) {
   const showStatusGlyph =
@@ -347,7 +278,6 @@ function ThreadTrailingIndicator({
         isBusy={isBusy}
         isWorkflowActive={isWorkflowActive}
         showUnreadBadge={showUnreadBadge}
-        successAnimationKey={successAnimationKey}
         unreadBadgeTone={unreadBadgeTone}
       />
     </span>
@@ -374,9 +304,7 @@ function ThreadRowComponent({
   const threadRuntimeBusy =
     isRuntimeBusyThread(thread) && !hasPendingInteraction;
   const threadWorkflowActive =
-    !threadRuntimeBusy &&
-    !hasPendingInteraction &&
-    hasActiveWorkflowActivity(thread);
+    !hasPendingInteraction && hasActiveWorkflowActivity(thread);
   const threadIsBusy = isBusyThread(thread) && !hasPendingInteraction;
   const showUnreadBadge =
     !hasPendingInteraction && !threadIsBusy && isUnreadDoneThread(thread);
@@ -404,7 +332,7 @@ function ThreadRowComponent({
     ? threadRuntimeBusy || childActivity.runtimeWorking
     : threadRuntimeBusy;
   const trailingIsWorkflowActive = hasHiddenChildren
-    ? !trailingRuntimeBusy && (threadWorkflowActive || childActivity.workflow)
+    ? threadWorkflowActive || childActivity.workflow
     : threadWorkflowActive;
   const trailingIsBusy = trailingRuntimeBusy;
   const trailingShowUnreadBadge = hasHiddenChildren
@@ -412,18 +340,16 @@ function ThreadRowComponent({
     : showUnreadBadge;
   const trailingUnreadBadgeTone: SidebarUnreadDotTone =
     hasHiddenChildren && childActivity.unreadError ? "error" : unreadBadgeTone;
-  const unreadSuccessAnimationKey = useUnreadSuccessAnimationKey(
-    trailingShowUnreadBadge && trailingUnreadBadgeTone === "default",
-  );
   const linkLabel = hasComposerDraft
     ? `Open ${labelTitle} (unsubmitted draft)`
     : `Open ${labelTitle}`;
-  const linkTitle = linkLabel;
   const rowDragBindings = options.dragBindings;
+  const showDragCursor = rowDragBindings !== undefined && thread.pinnedAt === null;
   const rowClassName = cn(
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row",
     SIDEBAR_ROW_BASE_CLASS,
+    LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
     options.isCompact
       ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
@@ -431,6 +357,7 @@ function ThreadRowComponent({
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
+    !showActive && "has-[[data-state=open]]:bg-sidebar-accent",
     rowDragBindings && !rowDragBindings.disabled && "select-none",
   );
   const rowStyle = getThreadRowStyle(options.depth);
@@ -457,18 +384,22 @@ function ThreadRowComponent({
           onProjectSelect?.();
         }}
         aria-label={linkLabel}
-        title={linkTitle}
-        className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
+        className={cn(
+          "absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2",
+          // Draggable rows show a grab affordance; the link still selects on
+          // click since a drag needs the activation distance.
+          showDragCursor && "cursor-grab active:cursor-grabbing",
+        )}
       />
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="min-w-0 truncate">{visibleTitle}</span>
+        <span className="min-w-0 truncate" title={labelTitle}>
+          {visibleTitle}
+        </span>
         {parentOptions && hasChildren ? (
           <SidebarChildToggleChevron
             isCollapsed={isParentCollapsed}
             expandLabel={`Expand ${threadTitle} threads`}
             collapseLabel={`Collapse ${threadTitle} threads`}
-            expandTitle="Expand child threads"
-            collapseTitle="Collapse child threads"
             onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
             revealOnHover
           />
@@ -499,7 +430,6 @@ function ThreadRowComponent({
               isBusy={trailingIsBusy}
               isWorkflowActive={trailingIsWorkflowActive}
               showUnreadBadge={trailingShowUnreadBadge}
-              successAnimationKey={unreadSuccessAnimationKey}
               unreadBadgeTone={trailingUnreadBadgeTone}
             />
           </span>
@@ -514,7 +444,7 @@ function ThreadRowComponent({
               thread={thread}
               triggerClassName={cn(
                 "text-subtle-foreground hover:bg-transparent hover:text-foreground",
-                COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+                SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
               )}
               onOpenChange={setIsDropdownActionsOpen}
             />
@@ -531,6 +461,7 @@ function ThreadRowComponent({
     onClickCapture: options.consumeClickSuppression
       ? handleRowClickCapture
       : undefined,
+    showDragCursor,
     stickyLevel: parentOptions?.stickyLevel,
     style: rowStyle,
   });

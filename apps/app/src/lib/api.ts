@@ -35,6 +35,7 @@ import type {
   EnvironmentDiffFileResponse,
   EnvironmentStatusResponse,
   EnvironmentPullRequestResponse,
+  HostDirectoryListing,
   TerminalListResponse,
   CreateThreadRequest,
   CreateTerminalRequest,
@@ -72,6 +73,7 @@ import type {
   ThreadStoragePathsQuery,
   TerminalListQuery,
   TerminalSession,
+  ThreadConversationOutlineResponse,
   ThreadTimelineResponse,
   TimelineTurnSummaryDetailsRequest,
   TimelineTurnSummaryDetailsResponse,
@@ -88,8 +90,15 @@ import type {
   ThreadStoragePathListResponse,
   WorkspacePathListResponse,
 } from "@bb/server-contract";
-import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
+import {
+  providerCliInstallEventSchema,
+  type ProviderCliInstallEvent,
+  type ProviderCliInstallRequest,
+  type ProviderCliStatusResponse,
+  type ProviderUsageResponse,
+} from "@bb/host-daemon-contract";
 import { apiClient, toRelativeUrl } from "./api-server";
+import { appSurfaceRequestInit } from "./app-surface";
 import {
   buildFilePreview,
   normalizeFilePreviewMimeType,
@@ -342,10 +351,13 @@ export async function loadFilePreview(
   signal?: AbortSignal,
 ): Promise<FilePreview> {
   const response = await requestResponse(
-    fetch(target.url, {
-      method: "GET",
-      signal,
-    }),
+    fetch(
+      target.url,
+      appSurfaceRequestInit({
+        method: "GET",
+        signal,
+      }),
+    ),
   );
   const contentBytes = new Uint8Array(await response.arrayBuffer());
   return buildFilePreview({
@@ -494,11 +506,14 @@ async function postMultipart<T>(
   }
   formData.set("file", file, file.name);
 
-  const res = await fetch(toRelativeUrl(url), {
-    method: "POST",
-    body: formData,
-    signal,
-  });
+  const res = await fetch(
+    toRelativeUrl(url),
+    appSurfaceRequestInit({
+      method: "POST",
+      body: formData,
+      signal,
+    }),
+  );
   if (!res.ok) {
     await throwHttpError(res);
   }
@@ -1365,6 +1380,150 @@ export async function getHost(id: string, signal?: AbortSignal): Promise<Host> {
   );
 }
 
+interface BrowseHostDirectoryArgs {
+  hostId: string;
+  /** Absolute directory to list; omit to list the host's home directory. */
+  path?: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Single-level directory listing for the interactive path browser. Used when
+ * picking a project path on a host whose native folder picker is unavailable
+ * (e.g. a remote device). Each navigation step is one shallow read.
+ */
+export async function browseHostDirectory(
+  args: BrowseHostDirectoryArgs,
+): Promise<HostDirectoryListing> {
+  return request<HostDirectoryListing>(
+    apiClient.hosts[":id"].directory.$get(
+      {
+        param: { id: args.hostId },
+        query: args.path ? { path: args.path } : {},
+      },
+      requestOptions(args.signal),
+    ),
+  );
+}
+
+export async function checkHostPathsExist(
+  hostId: string,
+  paths: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, boolean>> {
+  if (paths.length === 0) return {};
+  const response = await request<{ existence: Record<string, boolean> }>(
+    apiClient.hosts[":id"].paths.exist.$post(
+      {
+        param: { id: hostId },
+        json: { paths },
+      },
+      requestOptions(signal),
+    ),
+  );
+  return response.existence;
+}
+
+export async function pickHostFolder(
+  hostId: string,
+  clientHostId: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const response = await request<{ path: string | null }>(
+    apiClient.hosts[":id"]["pick-folder"].$post(
+      {
+        param: { id: hostId },
+        json: { clientHostId },
+      },
+      requestOptions(signal),
+    ),
+  );
+  return response.path;
+}
+
+export async function fetchHostProviderCliStatus(
+  hostId: string,
+  signal?: AbortSignal,
+): Promise<ProviderCliStatusResponse> {
+  return request<ProviderCliStatusResponse>(
+    apiClient.hosts[":id"]["provider-clis"].status.$get(
+      { param: { id: hostId } },
+      requestOptions(signal),
+    ),
+  );
+}
+
+export type ProviderCliInstallEventHandler = (
+  event: ProviderCliInstallEvent,
+) => void;
+
+export interface InstallHostProviderCliArgs {
+  hostId: string;
+  request: ProviderCliInstallRequest;
+  onEvent: ProviderCliInstallEventHandler;
+  signal?: AbortSignal;
+}
+
+function handleProviderCliInstallEventLine(
+  line: string,
+  onEvent: ProviderCliInstallEventHandler,
+): void {
+  const trimmedLine = line.trim();
+  if (trimmedLine.length === 0) {
+    return;
+  }
+  onEvent(providerCliInstallEventSchema.parse(JSON.parse(trimmedLine)));
+}
+
+function emitProviderCliInstallEventLines(
+  buffer: string,
+  onEvent: ProviderCliInstallEventHandler,
+): string {
+  const lines = buffer.split(/\r?\n/u);
+  const lastLine = lines.pop();
+  for (const line of lines) {
+    handleProviderCliInstallEventLine(line, onEvent);
+  }
+  return lastLine ?? "";
+}
+
+export async function installHostProviderCli({
+  hostId,
+  request,
+  onEvent,
+  signal,
+}: InstallHostProviderCliArgs): Promise<void> {
+  const res = await requestResponse(
+    apiClient.hosts[":id"]["provider-clis"].install.$post(
+      {
+        param: { id: hostId },
+        json: request,
+      },
+      requestOptions(signal),
+    ),
+  );
+
+  if (!res.body) {
+    throw new Error("Provider CLI install did not return a log stream");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const result = await reader.read();
+    if (result.done) {
+      break;
+    }
+    buffer += decoder.decode(result.value, { stream: true });
+    buffer = emitProviderCliInstallEventLines(buffer, onEvent);
+  }
+
+  buffer += decoder.decode();
+  handleProviderCliInstallEventLine(buffer, onEvent);
+}
+
 export async function getEnvironment(
   id: string,
   signal?: AbortSignal,
@@ -1477,6 +1636,23 @@ export async function getThreadTimeline({
             : {}),
         },
       },
+      requestOptions(signal),
+    ),
+  );
+}
+
+interface GetThreadConversationOutlineArgs {
+  id: string;
+  signal?: AbortSignal;
+}
+
+export async function getThreadConversationOutline({
+  id,
+  signal,
+}: GetThreadConversationOutlineArgs): Promise<ThreadConversationOutlineResponse> {
+  return request<ThreadConversationOutlineResponse>(
+    apiClient.threads[":id"]["conversation-outline"].$get(
+      { param: { id } },
       requestOptions(signal),
     ),
   );

@@ -2,7 +2,10 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTelemetryService } from "../../src/services/system/telemetry.js";
+import {
+  createTelemetryService,
+  runWithTelemetryAppSurface,
+} from "../../src/services/system/telemetry.js";
 
 function createTestLogger() {
   return {
@@ -31,6 +34,7 @@ describe("telemetry service", () => {
   it("sends events with a stable anonymous install id", async () => {
     const telemetry = await createTelemetryService({
       apiKey: "phc_test",
+      appSurface: "web",
       appVersion: "1.2.3",
       dataDir,
       enabled: true,
@@ -38,15 +42,25 @@ describe("telemetry service", () => {
     });
 
     telemetry.capture({ name: "app_started" });
+    runWithTelemetryAppSurface("desktop", () => {
+      telemetry.capture({
+        name: "thread_created",
+        properties: {
+          is_child_thread: true,
+          provider: "claude-code",
+        },
+      });
+    });
     telemetry.capture({
-      name: "thread_created",
+      name: "user_message_sent",
       properties: {
-        is_child_thread: true,
-        provider: "claude-code",
+        is_child_thread: false,
+        message_source: "thread_send",
+        provider: "codex",
       },
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const persistedId = (
       await readFile(join(dataDir, "telemetry-id"), "utf8")
     ).trim();
@@ -67,6 +81,7 @@ describe("telemetry service", () => {
       event: "app_started",
       properties: {
         app_version: "1.2.3",
+        app_surface: "web",
         arch: process.arch,
         platform: process.platform,
       },
@@ -75,8 +90,19 @@ describe("telemetry service", () => {
       event: "thread_created",
       properties: {
         app_version: "1.2.3",
+        app_surface: "desktop",
         is_child_thread: true,
         provider: "claude-code",
+      },
+    });
+    expect(calls[2]?.payload).toMatchObject({
+      event: "user_message_sent",
+      properties: {
+        app_version: "1.2.3",
+        app_surface: "web",
+        is_child_thread: false,
+        message_source: "thread_send",
+        provider: "codex",
       },
     });
   });
@@ -84,6 +110,7 @@ describe("telemetry service", () => {
   it("reuses the persisted install id across restarts", async () => {
     const args = {
       apiKey: "phc_test",
+      appSurface: "web" as const,
       appVersion: "1.2.3",
       dataDir,
       enabled: true,
@@ -107,6 +134,7 @@ describe("telemetry service", () => {
   ])("is fully inert when $label", async ({ apiKey, enabled }) => {
     const telemetry = await createTelemetryService({
       apiKey,
+      appSurface: "web",
       appVersion: "1.2.3",
       dataDir,
       enabled,
@@ -123,6 +151,7 @@ describe("telemetry service", () => {
     fetchMock.mockRejectedValue(new Error("offline"));
     const telemetry = await createTelemetryService({
       apiKey: "phc_test",
+      appSurface: "desktop",
       appVersion: "1.2.3",
       dataDir,
       enabled: true,
@@ -132,7 +161,11 @@ describe("telemetry service", () => {
     telemetry.capture({ name: "app_started" });
     await vi.waitFor(() => {
       expect(logger.debug).toHaveBeenCalledWith(
-        { err: expect.any(Error) },
+        {
+          app_surface: "desktop",
+          err: expect.any(Error),
+          event: "app_started",
+        },
         "Telemetry event send failed",
       );
     });

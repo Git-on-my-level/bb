@@ -19,7 +19,10 @@ import {
   useResumeAutomation,
   useRunAutomation,
 } from "@/hooks/queries/automation-queries";
-import { formatCronCadence } from "@/lib/format-schedule";
+import {
+  formatAutomationTrigger,
+  isCompletedOneShotAutomation,
+} from "@/lib/format-schedule";
 import {
   getAutomationsRoutePath,
   getThreadRoutePath,
@@ -206,6 +209,12 @@ export function AutomationDetailContent({
   onDelete,
   actionsPending,
 }: AutomationDetailContentProps) {
+  const completedOneShot = isCompletedOneShotAutomation({
+    enabled: automation.enabled,
+    trigger: automation.trigger,
+    runCount: automation.runCount,
+  });
+
   return (
     <PageShell contentClassName="pt-4 md:pt-5">
       <div className="mx-auto w-full max-w-3xl space-y-6">
@@ -233,8 +242,7 @@ export function AutomationDetailContent({
             ) : null}
           </div>
           <p className="text-xs text-muted-foreground">
-            {formatCronCadence(automation.trigger.cron)} ·{" "}
-            {automation.trigger.timezone}
+            {formatAutomationTrigger(automation.trigger)}
           </p>
           <p className="text-xs text-muted-foreground">
             {describeExecution(automation)}
@@ -256,20 +264,18 @@ export function AutomationDetailContent({
               variant="outline"
               size="sm"
               aria-label="Pause"
-              title="Pause"
               disabled={actionsPending}
               onClick={onPause}
             >
               <Icon name="Pause" className="size-4" />
               Pause
             </Button>
-          ) : (
+          ) : completedOneShot ? null : (
             <Button
               type="button"
               variant="outline"
               size="sm"
               aria-label="Resume"
-              title="Resume"
               disabled={actionsPending}
               onClick={onResume}
             >
@@ -282,7 +288,6 @@ export function AutomationDetailContent({
             variant="outline"
             size="sm"
             aria-label="Run now"
-            title="Run now"
             disabled={actionsPending}
             onClick={onRun}
           >
@@ -295,7 +300,6 @@ export function AutomationDetailContent({
             size="sm"
             className="text-destructive hover:text-destructive"
             aria-label="Delete automation"
-            title="Delete automation"
             disabled={actionsPending}
             onClick={onDelete}
           >

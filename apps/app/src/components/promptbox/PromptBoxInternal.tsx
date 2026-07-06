@@ -1,7 +1,10 @@
 import { atom, useAtom } from "jotai";
 import { RESET, atomWithStorage } from "jotai/utils";
-import type { PromptMentionCommandTrigger, PromptTextMention } from "@bb/domain";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type {
+  PromptMentionCommandTrigger,
+  PromptTextMention,
+} from "@bb/domain";
+import type { Node as ProseMirrorNode, Slice } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import {
@@ -21,6 +24,7 @@ import {
 import type {
   ActiveTrigger,
   CommandMenuState,
+  ComposerCommandSuggestion,
   MentionMenuState,
   ProviderCommandSuggestion,
   PromptMentionSuggestion,
@@ -32,6 +36,7 @@ import { findActiveTrigger } from "@/components/promptbox/mentions/find-active-t
 import { canLoadMoreCommandResults } from "@/components/promptbox/mentions/mention-menu-scroll";
 import { Button } from "@/components/ui/button.js";
 import { Icon } from "@/components/ui/icon.js";
+import { PluginComposerAccessories } from "@/components/plugin/PluginComposerAccessories";
 import {
   COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
   COARSE_POINTER_PROMPT_COMBO_BUTTON_CLASS,
@@ -60,9 +65,11 @@ import {
 import { promptEditorExtensions } from "./editor/prompt-editor-extensions";
 import {
   promptCommandResourceFromSuggestion,
+  promptEditorClipboardTextFromSlice,
   promptEditorContentFromValue,
   promptEditorInlineContentFromValue,
   promptEditorValueFromDoc,
+  promptEditorValueFromSlice,
   parsePromptEditorMentionAttrs,
   promptMentionResourceFromSuggestion,
   type PromptEditorValue,
@@ -70,6 +77,7 @@ import {
 import {
   exitTrailingBlockquoteBreak,
   insertParagraphBeforeBlockquote,
+  removeEmptyBlockquotes,
 } from "./editor/prompt-editor-blockquote";
 import { exitHeading } from "./editor/prompt-editor-heading";
 import { applyPromptListNewline } from "./editor/prompt-editor-list";
@@ -192,7 +200,7 @@ export interface TypeaheadMentionConfig {
  */
 export interface TypeaheadCommandConfig {
   trigger: PromptMentionCommandTrigger | null;
-  suggestions: readonly ProviderCommandSuggestion[];
+  suggestions: readonly ComposerCommandSuggestion[];
   isLoading: boolean;
   isError: boolean;
   hasMore: boolean;
@@ -500,6 +508,36 @@ function promptEditorValueFromPlainText(
   );
 }
 
+function promptEditorSliceHasBlockquote(slice: Slice): boolean {
+  let hasBlockquote = false;
+  slice.content.descendants((node) => {
+    if (node.type.name === "blockquote") {
+      hasBlockquote = true;
+      return false;
+    }
+    return true;
+  });
+  return hasBlockquote;
+}
+
+function plainTextHasQuoteLine(text: string): boolean {
+  return normalizePastedPlainText(text)
+    .split("\n")
+    .some((line) => line === ">" || line.startsWith("> "));
+}
+
+function trimTrailingPromptNewlines(value: PromptEditorValue): PromptEditorValue {
+  const text = value.text.replace(/\n+$/u, "");
+  if (text.length === value.text.length) {
+    return value;
+  }
+
+  return {
+    text,
+    mentions: value.mentions.filter((mention) => mention.end <= text.length),
+  };
+}
+
 function promptEditorValueFromRichHtml(html: string): ParsedRichClipboardValue {
   const document = new DOMParser().parseFromString(html, "text/html");
   let text = "";
@@ -653,6 +691,15 @@ function promptEditorValueFromClipboardPaste(
   return promptEditorValueFromRichHtml(html).value;
 }
 
+function runAfterClipboardCut(callback: () => void): void {
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(callback);
+    return;
+  }
+
+  setTimeout(callback, 0);
+}
+
 function revealPromptEditorSelection({
   editor,
   scrollContainer,
@@ -750,9 +797,7 @@ function findPromptActionTextSuffix(
   return (
     actions.find(
       (action) =>
-        !action.command &&
-        action.text.length > 0 &&
-        text.endsWith(action.text),
+        !action.command && action.text.length > 0 && text.endsWith(action.text),
     ) ?? null
   );
 }
@@ -834,10 +879,12 @@ function getPromptActionInsertionRange({
     return { from: selection.from, to: selection.to };
   }
 
-  const previousPromptActionRange = getPromptActionRangeImmediatelyBeforeCursor({
-    editor,
-    actions,
-  });
+  const previousPromptActionRange = getPromptActionRangeImmediatelyBeforeCursor(
+    {
+      editor,
+      actions,
+    },
+  );
   if (previousPromptActionRange !== null) {
     return previousPromptActionRange;
   }
@@ -998,6 +1045,7 @@ export function PromptBoxInternal({
   const editorScrollContainerRef = useRef<HTMLDivElement>(null);
   const revealSelectionFrameRef = useRef<number | null>(null);
   const promptActionFocusFrameRef = useRef<number | null>(null);
+  const pendingFocusEndRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const valueRef = useRef(value);
   const mentionRangesRef = useRef<readonly PromptTextMention[]>(mentionRanges);
@@ -1195,115 +1243,166 @@ export function PromptBoxInternal({
     [richTextEditing],
   );
 
-  const editor = useEditor({
-    extensions: editorExtensions,
-    content: promptEditorContentFromValue({
-      text: value,
-      mentions: mentionRanges,
-    }),
-    immediatelyRender: false,
-    editorProps: {
-      attributes: {
-        "aria-label": placeholder,
-        "data-placeholder": placeholder,
-        ...(onModifierSubmit ? { "aria-keyshortcuts": "Meta+Enter" } : {}),
-        autocomplete: "off",
-        class: cn(
-          "min-h-full whitespace-pre-wrap break-words outline-none",
-          "placeholder:select-none placeholder:text-subtle-foreground",
-        ),
-        enterkeyhint: editorEnterKeyHint,
-        ...(id ? { id } : {}),
-        role: "textbox",
-      },
-      handleDOMEvents: {
-        auxclick: (_view, event) => {
-          return suppressPromptEditorAnchorActivation(event);
-        },
-        blur: () => {
-          triggerKeyRef.current = "";
-          if (dismissedTriggerRef.current) {
-            dismissedTriggerRef.current = {
-              ...dismissedTriggerRef.current,
-              hasLeftRange: true,
-            };
-          }
-          setActiveTrigger(null);
-          onMentionQueryChange(null);
-          onCommandQueryChange(null);
-          return false;
-        },
-        click: (_view, event) => {
-          return suppressPromptEditorAnchorActivation(event);
-        },
-      },
-      handleClick: () => {
-        const currentEditor = editorRef.current;
-        if (!currentEditor) return false;
-        syncTriggerStateRef.current(currentEditor);
-        return false;
-      },
-      handleKeyDown: (_view, event) => {
-        return handleEditorKeyDownRef.current(event);
-      },
-      handlePaste: (_view, event) => {
-        const attachFiles = onAttachFilesRef.current;
-        const clipboardItems = Array.from(event.clipboardData?.items ?? []);
-        const pastedFiles = clipboardItems
-          .filter((item) => item.kind === "file")
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => file !== null);
-
-        if (attachFiles && pastedFiles.length > 0) {
-          event.preventDefault();
-          void attachFiles(pastedFiles);
-          return true;
-        }
-
-        const pastedValue = promptEditorValueFromClipboardPaste(
-          event.clipboardData ?? null,
-          promptActions,
-        );
-        if (pastedValue === null) return false;
-
-        event.preventDefault();
-        if (pastedValue.text.length === 0) return true;
-
-        editorRef.current
-          ?.chain()
-          .focus()
-          .insertContent(promptEditorInlineContentFromValue(pastedValue))
-          .run();
-        return true;
-      },
-    },
-    onCreate({ editor: createdEditor }) {
-      editorRef.current = createdEditor;
-      editorValueKeyRef.current = promptEditorValueKey({
+  const editor = useEditor(
+    {
+      extensions: editorExtensions,
+      content: promptEditorContentFromValue({
         text: value,
         mentions: mentionRanges,
-      });
+      }),
+      immediatelyRender: false,
+      editorProps: {
+        attributes: {
+          "aria-label": placeholder,
+          "data-placeholder": placeholder,
+          ...(onModifierSubmit ? { "aria-keyshortcuts": "Meta+Enter" } : {}),
+          autocomplete: "off",
+          class: cn(
+            "min-h-full whitespace-pre-wrap break-words outline-none",
+            "placeholder:select-none placeholder:text-subtle-foreground",
+          ),
+          enterkeyhint: editorEnterKeyHint,
+          ...(id ? { id } : {}),
+          role: "textbox",
+        },
+        clipboardTextSerializer: (slice, view) =>
+          promptEditorClipboardTextFromSlice(slice, view.state.schema),
+        handleDOMEvents: {
+          auxclick: (_view, event) => {
+            return suppressPromptEditorAnchorActivation(event);
+          },
+          blur: () => {
+            triggerKeyRef.current = "";
+            if (dismissedTriggerRef.current) {
+              dismissedTriggerRef.current = {
+                ...dismissedTriggerRef.current,
+                hasLeftRange: true,
+              };
+            }
+            setActiveTrigger(null);
+            onMentionQueryChange(null);
+            onCommandQueryChange(null);
+            return false;
+          },
+          cut: () => {
+            runAfterClipboardCut(() => {
+              const currentEditor = editorRef.current;
+              if (!currentEditor || currentEditor.isDestroyed) return;
+              removeEmptyBlockquotes(currentEditor);
+            });
+            return false;
+          },
+          click: (_view, event) => {
+            return suppressPromptEditorAnchorActivation(event);
+          },
+        },
+        handleClick: () => {
+          const currentEditor = editorRef.current;
+          if (!currentEditor) return false;
+          syncTriggerStateRef.current(currentEditor);
+          return false;
+        },
+        handleKeyDown: (_view, event) => {
+          return handleEditorKeyDownRef.current(event);
+        },
+        handlePaste: (view, event, slice) => {
+          const attachFiles = onAttachFilesRef.current;
+          const clipboardItems = Array.from(event.clipboardData?.items ?? []);
+          const pastedFiles = clipboardItems
+            .filter((item) => item.kind === "file")
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => file !== null);
+
+          if (attachFiles && pastedFiles.length > 0) {
+            event.preventDefault();
+            void attachFiles(pastedFiles);
+            return true;
+          }
+
+          const plainText = event.clipboardData?.getData("text/plain") ?? "";
+          const sliceHasBlockquote = promptEditorSliceHasBlockquote(slice);
+          if (sliceHasBlockquote || plainTextHasQuoteLine(plainText)) {
+            event.preventDefault();
+            const pastedValue = trimTrailingPromptNewlines(
+              sliceHasBlockquote
+                ? promptEditorValueFromSlice(slice, view.state.schema)
+                : promptEditorValueFromPlainText(plainText, promptActions),
+            );
+            if (pastedValue.text.length === 0) return true;
+
+            const currentEditor = editorRef.current;
+            const pastedContent =
+              promptEditorContentFromValue(pastedValue).content ?? [];
+            currentEditor
+              ?.chain()
+              .focus()
+              .insertContent(pastedContent)
+              .run();
+            if (currentEditor && !currentEditor.isDestroyed) {
+              const nextValue = trimTrailingPromptNewlines(
+                promptEditorValueFromDoc(currentEditor.state.doc),
+              );
+              editorValueKeyRef.current = promptEditorValueKey(nextValue);
+              onChangeRef.current(nextValue.text, nextValue.mentions);
+            }
+            return true;
+          }
+
+          const pastedValue = promptEditorValueFromClipboardPaste(
+            event.clipboardData ?? null,
+            promptActions,
+          );
+          if (pastedValue === null) return false;
+
+          event.preventDefault();
+          if (pastedValue.text.length === 0) return true;
+
+          editorRef.current
+            ?.chain()
+            .focus()
+            .insertContent(promptEditorInlineContentFromValue(pastedValue))
+            .run();
+          return true;
+        },
+      },
+      onCreate({ editor: createdEditor }) {
+        editorRef.current = createdEditor;
+        editorValueKeyRef.current = promptEditorValueKey({
+          text: value,
+          mentions: mentionRanges,
+        });
+      },
+      onSelectionUpdate({ editor: updatedEditor }) {
+        syncTriggerStateRef.current(updatedEditor);
+        scheduleRevealEditorSelection();
+      },
+      onUpdate({ editor: updatedEditor }) {
+        if (skipEditorChangeRef.current) return;
+        const nextValue = promptEditorValueFromDoc(updatedEditor.state.doc);
+        editorValueKeyRef.current = promptEditorValueKey(nextValue);
+        onChangeRef.current(nextValue.text, nextValue.mentions);
+        syncTriggerStateRef.current(updatedEditor);
+        scheduleRevealEditorSelection();
+      },
+      // Rebuild the editor when the rich-text preference toggles so the schema
+      // and input rules switch. The editor is otherwise created once; its
+      // handlers route through refs (above) to stay current without rebuilding.
     },
-    onSelectionUpdate({ editor: updatedEditor }) {
-      syncTriggerStateRef.current(updatedEditor);
-      scheduleRevealEditorSelection();
-    },
-    onUpdate({ editor: updatedEditor }) {
-      if (skipEditorChangeRef.current) return;
-      const nextValue = promptEditorValueFromDoc(updatedEditor.state.doc);
-      editorValueKeyRef.current = promptEditorValueKey(nextValue);
-      onChangeRef.current(nextValue.text, nextValue.mentions);
-      syncTriggerStateRef.current(updatedEditor);
-      scheduleRevealEditorSelection();
-    },
-    // Rebuild the editor when the rich-text preference toggles so the schema
-    // and input rules switch. The editor is otherwise created once; its
-    // handlers route through refs (above) to stay current without rebuilding.
-  }, [richTextEditing]);
+    [richTextEditing],
+  );
 
   useEffect(() => {
     editorRef.current = editor;
   }, [editor]);
+
+  useLayoutEffect(() => {
+    if (!editor) return;
+    if (!pendingFocusEndRef.current) return;
+
+    pendingFocusEndRef.current = false;
+    focusEditorAtEnd(editor);
+    scheduleRevealEditorSelection();
+  }, [editor, scheduleRevealEditorSelection]);
 
   useLayoutEffect(() => {
     placeholderRef.current = placeholder;
@@ -1315,12 +1414,23 @@ export function PromptBoxInternal({
     editor.view.dispatch(editor.state.tr);
   }, [editor, editorEnterKeyHint, placeholder]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (shouldAvoidSoftKeyboardAutofocus) return;
     if (!editor) return;
 
-    focusEditorAtEnd(editor);
-    scheduleRevealEditorSelection();
+    const focusEditor = () => {
+      if (editor.isDestroyed) return;
+      focusEditorAtEnd(editor);
+      scheduleRevealEditorSelection();
+    };
+
+    if (typeof window.requestAnimationFrame !== "function") {
+      focusEditor();
+      return;
+    }
+
+    const handle = window.requestAnimationFrame(focusEditor);
+    return () => window.cancelAnimationFrame(handle);
   }, [
     editor,
     focusScopeKey,
@@ -1475,7 +1585,7 @@ export function PromptBoxInternal({
     formElement.addEventListener("transitionend", handleTransitionEnd);
 
     return cleanup;
-  }, [zenModeLayout]);
+  }, [isZenMode, zenModeLayout]);
 
   const trimmedValue = value.trim();
   const hasAttachments = attachments.length > 0;
@@ -1528,7 +1638,8 @@ export function PromptBoxInternal({
     !commandLoading &&
     !commandError &&
     commandSuggestions.length === 0;
-  const showTypeaheadMenu = activeTrigger !== null && !isCommandTriggerLiteral;
+  const showTypeaheadMenu =
+    activeTrigger !== null && !isCommandTriggerLiteral;
 
   const typeaheadMenuState: TypeaheadMenuState =
     activeTriggerKind === "command"
@@ -1712,7 +1823,11 @@ export function PromptBoxInternal({
 
   const focusEnd = useCallback(() => {
     const currentEditor = editorRef.current;
-    if (!currentEditor || currentEditor.isDestroyed) return;
+    if (!currentEditor || currentEditor.isDestroyed) {
+      pendingFocusEndRef.current = true;
+      return;
+    }
+    pendingFocusEndRef.current = false;
     focusEditorAtEnd(currentEditor);
     scheduleRevealEditorSelection();
   }, [scheduleRevealEditorSelection]);
@@ -1952,6 +2067,19 @@ export function PromptBoxInternal({
     resetZenModeAfterSubmit();
   }, [canSubmit, onSubmit, resetZenModeAfterSubmit]);
 
+  // A no-argument built-in command (currently only `/compact`) is a complete
+  // action the moment it is selected, so applying it with Enter should also
+  // submit instead of leaving the pill parked for a second Enter. The submit is
+  // deferred to this effect — keyed on the flag — so `onSubmit` runs after the
+  // applied command mention has propagated into the parent draft (applying the
+  // pill updates the draft on the next render, not synchronously).
+  const [pendingCommandSubmit, setPendingCommandSubmit] = useState(false);
+  useEffect(() => {
+    if (!pendingCommandSubmit) return;
+    setPendingCommandSubmit(false);
+    submitPrompt();
+  }, [pendingCommandSubmit, submitPrompt]);
+
   const submitModifierPrompt = useCallback(() => {
     if (!canModifierSubmit || !onModifierSubmit) return;
     onModifierSubmit();
@@ -1987,7 +2115,10 @@ export function PromptBoxInternal({
     setIsZenMode((previous) => !previous);
 
     requestAnimationFrame(() => {
-      editorRef.current?.commands.focus();
+      const currentEditor = editorRef.current;
+      if (!currentEditor || currentEditor.isDestroyed) return;
+
+      currentEditor.commands.focus();
       scheduleRevealEditorSelection();
     });
   }, [scheduleRevealEditorSelection, setIsZenMode]);
@@ -2094,6 +2225,16 @@ export function PromptBoxInternal({
             activeSuggestions[selectedIndex] ?? activeSuggestions[0];
           if (selected) {
             applyTrigger(selected);
+            // Built-in commands (e.g. `/compact`) take no arguments, so picking
+            // one with Enter both inserts the pill and submits. Tab still only
+            // inserts, and mention suggestions are unaffected.
+            if (
+              event.key === "Enter" &&
+              selected.kind === "command" &&
+              selected.origin === "builtin"
+            ) {
+              setPendingCommandSubmit(true);
+            }
           }
           return true;
         }
@@ -2245,6 +2386,7 @@ export function PromptBoxInternal({
       onModifierSubmit,
       resetHistorySession,
       selectedIndex,
+      setPendingCommandSubmit,
       showTypeaheadMenu,
       submitModifierPrompt,
       submitPrompt,
@@ -2274,7 +2416,7 @@ export function PromptBoxInternal({
         emitAttachmentFiles(Array.from(event.dataTransfer.files));
       }}
       className={cn(
-        "relative w-full rounded-lg border border-border bg-background pb-2 shadow-lift",
+        "relative w-full rounded-xl border border-border bg-background pb-2 shadow-lift",
         // Zen toggles only the *height* of the box; the inset padding stays
         // identical so the placeholder/text doesn't jump when toggling.
         // `flex flex-col` lets the editor's `flex-1` fill the dvh height.
@@ -2309,7 +2451,6 @@ export function PromptBoxInternal({
             event.preventDefault();
           }}
           onClick={toggleZenMode}
-          title={isZenMode ? "Exit zen mode" : "Enter zen mode"}
           aria-label={isZenMode ? "Exit zen mode" : "Enter zen mode"}
           aria-pressed={isZenMode}
           // Neutralise the ghost variant's `aria-pressed:bg-state-active`
@@ -2421,7 +2562,7 @@ export function PromptBoxInternal({
         </div>
       ) : null}
 
-      <div className="flex shrink-0 flex-row items-center gap-3 px-3.5 pt-1.5">
+      <div className="flex shrink-0 flex-row items-center gap-3 pl-3.5 pr-2 pt-1.5">
         <div
           className="flex min-w-0 flex-1 flex-row items-center gap-1"
           aria-live="polite"
@@ -2431,13 +2572,14 @@ export function PromptBoxInternal({
             onAction={applyPromptAction}
           />
           {footerStart}
+          <PluginComposerAccessories />
         </div>
         <div className="flex shrink-0 flex-row items-center gap-1">
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            title="Attach files"
+            aria-label="Attach files"
             disabled={!onAttachFiles || isAttaching}
             onClick={() => attachmentInputRef.current?.click()}
             className={COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS}
@@ -2453,7 +2595,7 @@ export function PromptBoxInternal({
               type="button"
               size="icon"
               variant="ghost"
-              title={
+              aria-label={
                 !voice.isSupported
                   ? "Voice input is not supported in this browser"
                   : "Start voice input"
@@ -2470,7 +2612,7 @@ export function PromptBoxInternal({
               type="button"
               size="icon"
               variant="secondary"
-              title="Stop run"
+              aria-label="Stop run"
               onClick={onStop}
               className={COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS}
             >
@@ -2485,7 +2627,7 @@ export function PromptBoxInternal({
                 type="button"
                 size="sm"
                 variant="default"
-                title="Stop and transcribe recording"
+                aria-label="Stop and transcribe recording"
                 onClick={voice.stop}
                 className={cn(
                   "rounded-r-none",
@@ -2498,7 +2640,7 @@ export function PromptBoxInternal({
                 type="button"
                 size="sm"
                 variant="default"
-                title="Cancel recording"
+                aria-label="Cancel recording"
                 onClick={voice.cancel}
                 className={COARSE_POINTER_PROMPT_COMBO_BUTTON_CLASS}
               >
@@ -2511,7 +2653,7 @@ export function PromptBoxInternal({
                 type="button"
                 size="sm"
                 variant="default"
-                title="Transcribing voice input..."
+                aria-label="Transcribing voice input"
                 disabled
                 className={cn(
                   "rounded-r-none",
@@ -2525,7 +2667,7 @@ export function PromptBoxInternal({
                 type="button"
                 size="sm"
                 variant="default"
-                title="Cancel transcription"
+                aria-label="Cancel transcription"
                 onClick={voice.cancel}
                 className={COARSE_POINTER_PROMPT_COMBO_BUTTON_CLASS}
               >
@@ -2537,9 +2679,9 @@ export function PromptBoxInternal({
               type="submit"
               size="sm"
               variant="default"
-              title={effectiveSubmitTitle}
+              aria-label={effectiveSubmitTitle}
               disabled={!canSubmit}
-              className={COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS}
+              className={cn("ml-1", COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS)}
             >
               {isSubmitting ? (
                 <Icon name="Spinner" className="size-4 animate-spin" />

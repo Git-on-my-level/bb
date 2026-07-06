@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { Node } from "@tiptap/pm/model";
+import { Node, Slice } from "@tiptap/pm/model";
 import type { PromptTextMention } from "@bb/domain";
 import {
   PromptMentionExtension,
@@ -9,8 +9,10 @@ import {
 } from "./prompt-mention-extension";
 import {
   promptCommandResourceFromSuggestion,
+  promptEditorClipboardTextFromSlice,
   promptEditorContentFromValue,
   promptEditorInlineContentFromValue,
+  promptMentionResourceFromSuggestion,
   promptEditorValueFromDoc,
   type PromptEditorValue,
 } from "./prompt-editor-serialization";
@@ -114,6 +116,56 @@ describe("prompt editor serialization round-trip", () => {
     expect(result.mentions[0]!.start).toBe(mention.start);
     expect(result.mentions[0]!.end).toBe(mention.end);
     expect(result.mentions[0]!.resource).toEqual(mention.resource);
+  });
+});
+
+describe("prompt editor clipboard serialization", () => {
+  function clipboardText(content: unknown[]): string {
+    const doc = Node.fromJSON(schema, { type: "doc", content });
+    return promptEditorClipboardTextFromSlice(
+      new Slice(doc.content, 0, 0),
+      schema,
+    );
+  }
+
+  it("copies separate prompt lines with a single newline", () => {
+    expect(
+      clipboardText([
+        { type: "paragraph", content: [{ type: "text", text: "first" }] },
+        { type: "paragraph", content: [{ type: "text", text: "second" }] },
+      ]),
+    ).toBe("first\nsecond");
+  });
+
+  it("copies hard-break prompt lines with the same single newline", () => {
+    expect(
+      clipboardText([
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "first" },
+            { type: "hardBreak" },
+            { type: "text", text: "second" },
+          ],
+        },
+      ]),
+    ).toBe("first\nsecond");
+  });
+
+  it("copies a blockquote without adding a trailing blank line", () => {
+    expect(
+      clipboardText([
+        {
+          type: "blockquote",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "quoted" }],
+            },
+          ],
+        },
+      ]),
+    ).toBe("> quoted");
   });
 });
 
@@ -430,6 +482,41 @@ describe("prompt editor markdown serialization (doc -> markdown text)", () => {
 });
 
 describe("prompt editor serialization", () => {
+  it("builds a project mention resource from a project suggestion", () => {
+    expect(
+      promptMentionResourceFromSuggestion({
+        kind: "project",
+        path: "project:proj_abc",
+        replacement: "project:proj_abc",
+        projectId: "proj_abc",
+        name: "Alpha Service",
+      }),
+    ).toEqual({
+      kind: "project",
+      projectId: "proj_abc",
+      label: "Alpha Service",
+    });
+  });
+
+  it("round-trips a project mention through the editor document", () => {
+    const value: PromptEditorValue = {
+      text: "look at @project:proj_abc please",
+      mentions: [
+        {
+          start: "look at ".length,
+          end: "look at @project:proj_abc".length,
+          resource: {
+            kind: "project",
+            projectId: "proj_abc",
+            label: "Alpha Service",
+          },
+        },
+      ],
+    };
+
+    expect(roundTrip(value)).toEqual(value);
+  });
+
   it("builds command mention resources from provider command suggestions", () => {
     expect(
       promptCommandResourceFromSuggestion({

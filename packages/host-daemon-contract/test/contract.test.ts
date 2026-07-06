@@ -170,6 +170,23 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
     ],
     truncated: false,
   },
+  "host.browse_directory": {
+    directory: "/home/me/project",
+    parent: "/home/me",
+    entries: [
+      { kind: "directory", name: "src", path: "/home/me/project/src" },
+      { kind: "file", name: "README.md", path: "/home/me/project/README.md" },
+    ],
+  },
+  "host.paths_exist": {
+    existence: {
+      "/home/me/project": true,
+      "/home/me/missing": false,
+    },
+  },
+  "host.pick_folder": {
+    path: "/home/me/project",
+  },
   "host.list_commands": {
     commands: [
       {
@@ -214,6 +231,7 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
     contentEncoding: "utf8",
     mimeType: "text/html",
     sizeBytes: 15,
+    sha256: "a".repeat(64),
   },
   "host.read_file_relative": {
     path: "assets/logo.png",
@@ -221,6 +239,12 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
     contentEncoding: "base64",
     mimeType: "image/png",
     sizeBytes: 8,
+    sha256: "b".repeat(64),
+  },
+  "host.write_file": {
+    outcome: "written",
+    sha256: "c".repeat(64),
+    sizeBytes: 12,
   },
   "provider.list_models": {
     models: [
@@ -264,6 +288,79 @@ const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
       ],
     },
     claudeCode: { status: "unauthenticated" },
+  },
+  "provider_cli.status": {
+    codex: {
+      displayName: "Codex",
+      executableName: "codex",
+      executablePath: null,
+      installed: false,
+      installSource: "notInstalled",
+      currentVersion: null,
+      latestVersion: "0.136.0",
+      minimumSupportedVersion: "0.136.0",
+      npmPackageName: "@openai/codex",
+      npmGlobalPackageVersion: null,
+      installAction: {
+        kind: "install",
+        label: "Install",
+        commandKind: "exec",
+        command: "npm install -g @openai/codex@latest",
+      },
+      needsUpdate: false,
+      versionUnsupported: false,
+    },
+    claudeCode: {
+      displayName: "Claude Code",
+      executableName: "claude",
+      executablePath: "/opt/homebrew/bin/claude",
+      installed: true,
+      installSource: "external",
+      currentVersion: "1.0.0",
+      latestVersion: null,
+      minimumSupportedVersion: null,
+      npmPackageName: null,
+      npmGlobalPackageVersion: null,
+      installAction: null,
+      needsUpdate: false,
+      versionUnsupported: false,
+    },
+    cursor: {
+      displayName: "Cursor",
+      executableName: "cursor-agent",
+      executablePath: null,
+      installed: false,
+      installSource: "notInstalled",
+      currentVersion: null,
+      latestVersion: null,
+      minimumSupportedVersion: null,
+      npmPackageName: "@cursor/agent",
+      npmGlobalPackageVersion: null,
+      installAction: {
+        kind: "install",
+        label: "Install",
+        commandKind: "shell",
+        command: "curl https://cursor.com/install | bash",
+      },
+      needsUpdate: false,
+      versionUnsupported: false,
+    },
+  },
+  "provider_cli.install": {
+    events: [
+      {
+        type: "started",
+        provider: "codex",
+        command: "npm install -g @openai/codex@latest",
+      },
+      {
+        type: "completed",
+        provider: "codex",
+        exitCode: 0,
+        signal: null,
+        success: true,
+      },
+    ],
   },
   "workspace.status": WORKSPACE_UNAVAILABLE_RESULT,
   "workspace.diff": WORKSPACE_UNAVAILABLE_RESULT,
@@ -491,6 +588,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "dynamic ACP model selection omits selectFlag when the agent cannot pin a model at launch.",
   "hostDaemonCommandSchema.checkout":
     "environment.provision only includes checkout instructions for unmanaged workspaces that requested a branch mutation.",
+  "hostDaemonOnlineRpcCommandSchema.expectedSha256":
+    "host.write_file may omit expectedSha256 for unconditional writes; a hash is the compare-and-swap guard and null means create-only.",
   "hostDaemonOnlineRpcCommandSchema.mergeBaseBranch":
     "workspace.status may omit mergeBaseBranch when the caller only needs working-tree state.",
   "hostDaemonOnlineRpcCommandSchema.acpLaunchSpec":
@@ -501,8 +600,12 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "dynamic ACP agents may omit modelCli so ACP uses the shared default-model sentinel path.",
   "hostDaemonOnlineRpcCommandSchema.acpLaunchSpec.modelCli.selectFlag":
     "dynamic ACP model selection omits selectFlag when the agent cannot pin a model at launch.",
+  "hostDaemonOnlineRpcCommandSchema.additionalSkillsRootPaths":
+    "host.list_commands may include inherited skill roots for source-dev app instances; ordinary app instances scan data-dir and built-in skills.",
   "hostDaemonOnlineRpcCommandSchema.query":
     "host.list_files may omit a search string to list files without filtering.",
+  "hostDaemonOnlineRpcCommandSchema.path":
+    "host.browse_directory may omit path to list the host's home directory, which a remote caller cannot resolve.",
   "hostDaemonOnlineRpcCommandSchema.ref":
     "host.read_file may omit ref to read from disk; setting ref switches to git history at that ref.",
   "hostDaemonOnlineRpcCommandSchema.rootPath":
@@ -537,20 +640,44 @@ describe("host-daemon local schemas", () => {
   it("parses workspace open target routes", () => {
     expect(
       contract.workspaceOpenTargetSchema.parse({
-        id: "vscode",
-        label: "VS Code",
+        id: "custom:my-editor",
+        label: "My Editor",
+        kind: "editor",
+        icon: {
+          kind: "builtin",
+          name: "vscode",
+        },
         capabilities: {
           openDirectory: true,
           openFile: true,
+          openFileAtColumn: true,
+          openFileAtLine: true,
+        },
+        remoteSshCapabilities: {
+          openDirectory: true,
+          openFile: true,
+          openFileAtColumn: true,
           openFileAtLine: true,
         },
       }),
     ).toEqual({
-      id: "vscode",
-      label: "VS Code",
+      id: "custom:my-editor",
+      label: "My Editor",
+      kind: "editor",
+      icon: {
+        kind: "builtin",
+        name: "vscode",
+      },
       capabilities: {
         openDirectory: true,
         openFile: true,
+        openFileAtColumn: true,
+        openFileAtLine: true,
+      },
+      remoteSshCapabilities: {
+        openDirectory: true,
+        openFile: true,
+        openFileAtColumn: true,
         openFileAtLine: true,
       },
     });
@@ -626,17 +753,58 @@ describe("host-daemon local schemas", () => {
         targetId: "zed",
       }),
     ).toEqual({
+      context: { kind: "local" },
+      columnNumber: null,
       lineNumber: 12,
       path: "/tmp/workspace",
       targetId: "zed",
+    });
+
+    expect(
+      contract.openInTargetRequestSchema.parse({
+        context: {
+          kind: "remote-ssh",
+          serverOrigin: "https://bb.example.test",
+          hostId: "host_remote",
+        },
+        lineNumber: 12,
+        path: "/home/me/project/file.ts",
+        targetId: "vscode",
+      }),
+    ).toEqual({
+      context: {
+        kind: "remote-ssh",
+        serverOrigin: "https://bb.example.test",
+        hostId: "host_remote",
+      },
+      columnNumber: null,
+      lineNumber: 12,
+      path: "/home/me/project/file.ts",
+      targetId: "vscode",
     });
   });
 
   it("rejects malformed workspace open payloads", () => {
     expect(() =>
       contract.workspaceOpenTargetSchema.parse({
-        id: "unknown-editor",
+        id: "",
         label: "Unknown",
+        capabilities: {
+          openDirectory: true,
+          openFile: true,
+          openFileAtLine: true,
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      contract.workspaceOpenTargetSchema.parse({
+        id: "custom:bad-icon",
+        label: "Bad Icon",
+        icon: {
+          kind: "data-url",
+          dataUrl: "https://example.test/icon.png",
+        },
         capabilities: {
           openDirectory: true,
           openFile: true,
@@ -674,6 +842,28 @@ describe("host-daemon local schemas", () => {
         lineNumber: 0,
         path: "/tmp/workspace",
         targetId: "zed",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      contract.openInTargetRequestSchema.parse({
+        columnNumber: 0,
+        lineNumber: 1,
+        path: "/tmp/workspace",
+        targetId: "zed",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      contract.openInTargetRequestSchema.parse({
+        context: {
+          kind: "remote-ssh",
+          serverOrigin: "not a url",
+          hostId: "host_remote",
+        },
+        lineNumber: 1,
+        path: "/tmp/workspace",
+        targetId: "vscode",
       }),
     ).toThrow();
   });
@@ -2028,6 +2218,7 @@ describe("host-daemon command schemas", () => {
         contentEncoding: "utf8",
         mimeType: "text/markdown",
         sizeBytes: 13,
+        sha256: "d".repeat(64),
       }),
     ).toMatchObject({
       path: "/tmp/bb-data/thread-storage/thread-123/notes.md",
@@ -2042,6 +2233,7 @@ describe("host-daemon command schemas", () => {
         contentEncoding: "base64",
         mimeType: "image/png",
         sizeBytes: 8,
+        sha256: "f".repeat(64),
       }),
     ).toMatchObject({
       path: "assets/logo.png",
@@ -2143,7 +2335,7 @@ describe("host-daemon command schemas", () => {
 
 describe("host-daemon session schemas", () => {
   it("documents the current protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(44);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(45);
   });
 
   it("parses valid session open and event batch payloads", () => {
@@ -2608,6 +2800,7 @@ describe("host-daemon session schemas", () => {
           mimeType: "text/markdown",
           modifiedAtMs: 1234.5,
           sizeBytes: 13,
+          sha256: "e".repeat(64),
         },
       }),
     ).toEqual({
@@ -2622,6 +2815,7 @@ describe("host-daemon session schemas", () => {
         mimeType: "text/markdown",
         modifiedAtMs: 1234.5,
         sizeBytes: 13,
+        sha256: "e".repeat(64),
       },
     });
 
@@ -2638,6 +2832,7 @@ describe("host-daemon session schemas", () => {
           mimeType: "image/png",
           modifiedAtMs: 1234.5,
           sizeBytes: 8,
+          sha256: "f".repeat(64),
         },
       }),
     ).toEqual({
@@ -2652,6 +2847,7 @@ describe("host-daemon session schemas", () => {
         mimeType: "image/png",
         modifiedAtMs: 1234.5,
         sizeBytes: 8,
+        sha256: "f".repeat(64),
       },
     });
 

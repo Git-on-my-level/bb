@@ -61,6 +61,9 @@ export interface ThreadSearchMatch {
   sourceKind: ThreadSearchSourceKind;
   text: string;
   highlightRanges: ThreadSearchHighlightRange[];
+  // Event sequence of the matched message (null for title matches), so callers
+  // can deep-link to the message in the conversation timeline.
+  sourceSeq: number | null;
 }
 
 export interface ThreadSearchResult {
@@ -250,6 +253,8 @@ export interface CreateThreadInput {
   originKind?: ThreadOriginKind | null;
   /** @deprecated Use originKind. */
   childOrigin?: ThreadChildOrigin | null;
+  /** Plugin attribution for create origin "plugin". */
+  originPluginId?: string | null;
 }
 
 export function createThread(
@@ -280,6 +285,7 @@ export function createThread(
             (originKind === null ? null : input.parentThreadId ?? null),
           originKind,
           childOrigin: null,
+          originPluginId: input.originPluginId ?? null,
           lastReadAt: now,
           latestAttentionAt: now,
           createdAt: now,
@@ -1014,6 +1020,7 @@ function hydrateThreadSearchGroup(
         text: row.text,
         tokens: args.tokens,
       }),
+      sourceSeq: row.sourceSeq,
     });
     matchesByThreadId.set(row.threadId, matches);
   }

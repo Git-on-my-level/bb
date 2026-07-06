@@ -8,7 +8,6 @@ import { useMemo } from "react";
 import { useDebounceValue } from "usehooks-ts";
 import type {
   PendingInteraction,
-  ResolvedThreadExecutionOptions,
   ThreadWithRuntime,
 } from "@bb/domain";
 import type {
@@ -19,6 +18,7 @@ import type {
   ThreadResponse,
   ThreadSearchResponse,
   ThreadWithIncludesResponse,
+  ThreadConversationOutlineResponse,
   ThreadStorageFileListResponse,
   ThreadStoragePathListResponse,
   ThreadTimelineResponse,
@@ -48,11 +48,17 @@ import {
 import {
   PROMPT_HISTORY_STALE_TIME_MS,
   requireEnabledQueryArg,
+  shouldRetryTransientReadQuery,
+  TRANSIENT_READ_RETRY_DELAY_MS,
 } from "./query-helpers";
+import {
+  REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
+  REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,
+  RESUME_REFETCH_QUERY_POLICY,
+} from "./query-policies";
 import {
   archivedThreadsListQueryKey,
   disabledThreadListQueryKey,
-  threadDefaultExecutionOptionsQueryKey,
   threadDetailBootstrapQueryKey,
   threadQueuedMessagesQueryKey,
   threadListQueryKey,
@@ -64,6 +70,7 @@ import {
   threadStoragePathsQueryKey,
   threadStorageFilePreviewQueryKey,
   threadHostFilePreviewQueryKey,
+  threadConversationOutlineQueryKey,
   threadTimelineQueryKey,
   threadTimelineTurnSummaryDetailsQueryKey,
   threadsQueryKey,
@@ -96,8 +103,6 @@ type ThreadTimelineTurnSummaryDetailsQueryOptions = QueryOptions;
 type ThreadQueuedMessagesQueryOptions = QueryOptions;
 
 type ThreadPromptHistoryQueryOptions = QueryOptions;
-
-type ThreadDefaultExecutionOptionsQueryOptions = QueryOptions;
 
 type ThreadPendingInteractionsQueryOptions = QueryOptions;
 
@@ -505,6 +510,8 @@ export function useThread(id: string, options?: QueryOptions) {
     enabled,
     staleTime: 5_000,
     refetchOnMount: options?.refetchOnMount ?? true,
+    retry: shouldRetryTransientReadQuery,
+    retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
     placeholderData: (previousData, previousQuery) =>
       resolveThreadPlaceholder(previousData, previousQuery?.queryKey, id) ??
       liftThreadListPlaceholder(
@@ -550,6 +557,8 @@ export function useThreadDetailBootstrap(
     },
     enabled,
     staleTime: Infinity,
+    retry: shouldRetryTransientReadQuery,
+    retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
   });
 }
 
@@ -569,7 +578,7 @@ export function useThreadQueuedMessages(
       ),
     enabled,
     refetchOnMount: options?.refetchOnMount ?? true,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
     staleTime: options?.staleTime,
   });
 }
@@ -594,24 +603,6 @@ export function useThreadPromptHistory(
   });
 }
 
-export function useThreadDefaultExecutionOptions(
-  id: string,
-  options?: ThreadDefaultExecutionOptionsQueryOptions,
-) {
-  return useQuery<ResolvedThreadExecutionOptions | null>({
-    queryKey: threadDefaultExecutionOptionsQueryKey(id),
-    queryFn: ({ signal }) =>
-      api.getThreadDefaultExecutionOptions(
-        requireThreadId(id, "useThreadDefaultExecutionOptions"),
-        signal,
-      ),
-    enabled: (options?.enabled ?? true) && Boolean(id),
-    refetchOnMount: options?.refetchOnMount ?? true,
-    refetchOnWindowFocus: false,
-    staleTime: options?.staleTime,
-  });
-}
-
 export function useThreadPendingInteractions(
   id: string,
   options?: ThreadPendingInteractionsQueryOptions,
@@ -628,7 +619,7 @@ export function useThreadPendingInteractions(
       ),
     enabled,
     refetchOnMount: options?.refetchOnMount ?? true,
-    refetchOnWindowFocus: false,
+    ...REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,
     staleTime: options?.staleTime,
   });
 }
@@ -652,8 +643,7 @@ export function useThreadStorageFiles(
     enabled,
     // Subscriptions can be absent while no UI is listening, so remount must
     // establish a fresh baseline instead of trusting cached data.
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
   });
 }
 
@@ -674,8 +664,7 @@ export function useThreadStoragePaths(
         signal,
       }),
     enabled,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -697,8 +686,7 @@ export function useThreadStorageFilePreview(
         signal,
       ),
     enabled,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    ...REALTIME_OWNED_MOUNT_BASELINE_QUERY_POLICY,
   });
 }
 
@@ -724,7 +712,7 @@ export function useThreadHostFilePreview(
         signal,
       ),
     enabled,
-    refetchOnWindowFocus: false,
+    ...RESUME_REFETCH_QUERY_POLICY,
   });
 }
 
@@ -786,12 +774,43 @@ export function useThreadTimeline(
     ...(options?.staleTime === undefined
       ? {}
       : { staleTime: options.staleTime }),
+    retry: shouldRetryTransientReadQuery,
+    retryDelay: TRANSIENT_READ_RETRY_DELAY_MS,
     placeholderData: (previousData, previousQuery) =>
       resolveThreadTimelinePlaceholder(
         previousData,
         previousQuery?.queryKey,
         id,
       ),
+  });
+}
+
+/**
+ * Full conversation outline (every user/agent message) for a thread's
+ * table-of-contents minimap. Unlike {@link useThreadTimeline}, this is not
+ * paginated — it always reflects the whole thread — so the minimap can show
+ * messages that have not yet been scrolled/paged into the loaded window. It is
+ * invalidated by the same realtime `events-appended` signal as the timeline
+ * window, so it stays in sync as new messages arrive.
+ */
+export function useThreadConversationOutline(
+  id: string,
+  options?: ThreadTimelineQueryOptions,
+) {
+  const enabled = (options?.enabled ?? true) && Boolean(id);
+  useThreadDetailRealtimeSubscription(id, { enabled });
+
+  return useQuery<ThreadConversationOutlineResponse>({
+    queryKey: threadConversationOutlineQueryKey(id),
+    queryFn: async ({ signal }) => {
+      const threadId = requireThreadId(id, "useThreadConversationOutline");
+      return api.getThreadConversationOutline({ id: threadId, signal });
+    },
+    enabled,
+    refetchOnMount: options?.refetchOnMount ?? true,
+    ...(options?.staleTime === undefined
+      ? {}
+      : { staleTime: options.staleTime }),
   });
 }
 

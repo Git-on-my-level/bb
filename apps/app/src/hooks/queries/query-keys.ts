@@ -12,6 +12,7 @@ import {
 
 export const HOSTS_QUERY_KEY = "hosts";
 export const HOST_QUERY_KEY = "host";
+export const HOST_DIRECTORY_QUERY_KEY = "hostDirectory";
 export const PROJECTS_QUERY_KEY = "projects";
 export const PROJECT_PATHS_QUERY_KEY = "projectPaths";
 export const PROJECT_FILE_PREVIEW_QUERY_KEY = "projectFilePreview";
@@ -49,15 +50,17 @@ export const ENVIRONMENT_DIFF_FILE_QUERY_KEY = "environmentDiffFile";
 export const ENVIRONMENT_FILE_PREVIEW_QUERY_KEY = "environmentFilePreview";
 export const ENVIRONMENT_PATHS_QUERY_KEY = "environmentPaths";
 export const THREAD_TIMELINE_QUERY_KEY = "threadTimeline";
+export const THREAD_CONVERSATION_OUTLINE_QUERY_KEY =
+  "threadConversationOutline";
 export const THREAD_TIMELINE_TURN_SUMMARY_DETAILS_QUERY_KEY =
   "threadTimelineTurnSummaryDetails";
 export const SYSTEM_PROVIDERS_QUERY_KEY = "systemProviders";
 export const SYSTEM_CONFIG_QUERY_KEY = "systemConfig";
 export const SYSTEM_EXECUTION_OPTIONS_QUERY_KEY = "systemExecutionOptions";
 export const SYSTEM_VERSION_QUERY_KEY = "systemVersion";
-export const LOCAL_PROVIDER_CLI_STATUS_QUERY_KEY = "localProviderCliStatus";
+export const HOST_PROVIDER_CLI_STATUS_QUERY_KEY = "hostProviderCliStatus";
 export const SYSTEM_USAGE_LIMITS_QUERY_KEY = "systemUsageLimits";
-export const LOCAL_PATH_EXISTENCE_QUERY_KEY = "localPathExistence";
+export const HOST_PATH_EXISTENCE_QUERY_KEY = "hostPathExistence";
 export const AUTOMATIONS_QUERY_KEY = "automations";
 export const AUTOMATION_DETAIL_QUERY_KEY = "automationDetail";
 export const AUTOMATION_RUNS_QUERY_KEY = "automationRuns";
@@ -92,6 +95,11 @@ export type HostsQueryKey = readonly [typeof HOSTS_QUERY_KEY];
 export type HostQueryId = string | null | undefined;
 export type HostQueryKey = readonly [typeof HOST_QUERY_KEY, HostQueryId];
 export type AllHostQueryKeyPrefix = readonly [typeof HOST_QUERY_KEY];
+export type HostDirectoryQueryKey = readonly [
+  typeof HOST_DIRECTORY_QUERY_KEY,
+  HostQueryId,
+  string | null,
+];
 export type ProjectsQueryKey = readonly [typeof PROJECTS_QUERY_KEY];
 export type AllProjectPathsQueryKeyPrefix = readonly [
   typeof PROJECT_PATHS_QUERY_KEY,
@@ -165,6 +173,9 @@ export type DisabledThreadListQueryKey = readonly [
 ];
 export type ThreadQueryKeyPrefix = readonly [typeof THREAD_QUERY_KEY];
 export type ThreadQueryKey = readonly [typeof THREAD_QUERY_KEY, string];
+export type ThreadDetailBootstrapQueryKeyPrefix = readonly [
+  typeof THREAD_DETAIL_BOOTSTRAP_QUERY_KEY,
+];
 export type ThreadDetailBootstrapQueryKey = readonly [
   typeof THREAD_DETAIL_BOOTSTRAP_QUERY_KEY,
   string,
@@ -265,6 +276,13 @@ export type ThreadHostFilePreviewQueryKey = readonly [
   string | null | undefined,
   string | null,
 ];
+export type AllThreadHostFilePreviewQueryKeyPrefix = readonly [
+  typeof THREAD_HOST_FILE_PREVIEW_QUERY_KEY,
+];
+export type ThreadHostFilePreviewQueryKeyPrefix = readonly [
+  typeof THREAD_HOST_FILE_PREVIEW_QUERY_KEY,
+  string,
+];
 export type EnvironmentQueryKeyPrefix = readonly [typeof ENVIRONMENT_QUERY_KEY];
 export type EnvironmentQueryKey = readonly [
   typeof ENVIRONMENT_QUERY_KEY,
@@ -303,6 +321,17 @@ export type EnvironmentMergeBaseBranchesQueryKeyPrefix = readonly [
 export type ThreadTimelineQueryKey = readonly [
   typeof THREAD_TIMELINE_QUERY_KEY,
   string,
+];
+export type ThreadConversationOutlineQueryKey = readonly [
+  typeof THREAD_CONVERSATION_OUTLINE_QUERY_KEY,
+  string,
+];
+export type ThreadConversationOutlineQueryKeyPrefix = readonly [
+  typeof THREAD_CONVERSATION_OUTLINE_QUERY_KEY,
+  string,
+];
+export type AllThreadConversationOutlineQueryKeyPrefix = readonly [
+  typeof THREAD_CONVERSATION_OUTLINE_QUERY_KEY,
 ];
 export interface ThreadTimelineTurnSummaryDetailsQueryIdentity {
   sourceSeqEnd: number;
@@ -396,9 +425,9 @@ export type SystemProvidersQueryKey = readonly [
 ];
 export type SystemConfigQueryKey = readonly [typeof SYSTEM_CONFIG_QUERY_KEY];
 export type SystemVersionQueryKey = readonly [typeof SYSTEM_VERSION_QUERY_KEY];
-export type LocalProviderCliStatusQueryKey = readonly [
-  typeof LOCAL_PROVIDER_CLI_STATUS_QUERY_KEY,
-  number | null,
+export type HostProviderCliStatusQueryKey = readonly [
+  typeof HOST_PROVIDER_CLI_STATUS_QUERY_KEY,
+  string | null,
 ];
 export type SystemUsageLimitsQueryKey = readonly [
   typeof SYSTEM_USAGE_LIMITS_QUERY_KEY,
@@ -415,13 +444,13 @@ export type SystemExecutionOptionsEnvironmentQueryKeyPrefix = readonly [
   typeof SYSTEM_EXECUTION_OPTIONS_QUERY_KEY,
   string | null,
 ];
-export type LocalPathExistenceQueryKey = readonly [
-  typeof LOCAL_PATH_EXISTENCE_QUERY_KEY,
-  string,
+export type HostPathExistenceQueryKey = readonly [
+  typeof HOST_PATH_EXISTENCE_QUERY_KEY,
+  string | null,
   readonly string[],
 ];
-export type LocalPathExistenceQueryKeyPrefix = readonly [
-  typeof LOCAL_PATH_EXISTENCE_QUERY_KEY,
+export type HostPathExistenceQueryKeyPrefix = readonly [
+  typeof HOST_PATH_EXISTENCE_QUERY_KEY,
 ];
 export type AutomationsQueryKey = readonly [typeof AUTOMATIONS_QUERY_KEY];
 export type AutomationDetailQueryKey = readonly [
@@ -455,6 +484,13 @@ export function hostQueryKey(hostId: HostQueryId): HostQueryKey {
 
 export function allHostQueryKeyPrefix(): AllHostQueryKeyPrefix {
   return [HOST_QUERY_KEY];
+}
+
+export function hostDirectoryQueryKey(
+  hostId: HostQueryId,
+  path: string | null,
+): HostDirectoryQueryKey {
+  return [HOST_DIRECTORY_QUERY_KEY, hostId, path];
 }
 
 export function projectsQueryKey(): ProjectsQueryKey {
@@ -609,6 +645,10 @@ export function threadDetailBootstrapQueryKey(
   return [THREAD_DETAIL_BOOTSTRAP_QUERY_KEY, threadId];
 }
 
+export function allThreadDetailBootstrapQueryKeyPrefix(): ThreadDetailBootstrapQueryKeyPrefix {
+  return [THREAD_DETAIL_BOOTSTRAP_QUERY_KEY];
+}
+
 export function allThreadQueryKeyPrefix(): ThreadQueryKeyPrefix {
   return [THREAD_QUERY_KEY];
 }
@@ -758,6 +798,16 @@ export function threadHostFilePreviewQueryKey(
   return [THREAD_HOST_FILE_PREVIEW_QUERY_KEY, threadId, environmentId, path];
 }
 
+export function allThreadHostFilePreviewQueryKeyPrefix(): AllThreadHostFilePreviewQueryKeyPrefix {
+  return [THREAD_HOST_FILE_PREVIEW_QUERY_KEY];
+}
+
+export function threadHostFilePreviewQueryKeyPrefix(
+  threadId: string,
+): ThreadHostFilePreviewQueryKeyPrefix {
+  return [THREAD_HOST_FILE_PREVIEW_QUERY_KEY, threadId];
+}
+
 export function allEnvironmentQueryKeyPrefix(): EnvironmentQueryKeyPrefix {
   return [ENVIRONMENT_QUERY_KEY];
 }
@@ -820,6 +870,22 @@ export function threadTimelineQueryKey(
   threadId: string,
 ): ThreadTimelineQueryKey {
   return [THREAD_TIMELINE_QUERY_KEY, threadId];
+}
+
+export function threadConversationOutlineQueryKey(
+  threadId: string,
+): ThreadConversationOutlineQueryKey {
+  return [THREAD_CONVERSATION_OUTLINE_QUERY_KEY, threadId];
+}
+
+export function threadConversationOutlineQueryKeyPrefix(
+  threadId: string,
+): ThreadConversationOutlineQueryKeyPrefix {
+  return [THREAD_CONVERSATION_OUTLINE_QUERY_KEY, threadId];
+}
+
+export function allThreadConversationOutlineQueryKeyPrefix(): AllThreadConversationOutlineQueryKeyPrefix {
+  return [THREAD_CONVERSATION_OUTLINE_QUERY_KEY];
 }
 
 export function threadTimelineTurnSummaryDetailsQueryKey({
@@ -972,10 +1038,10 @@ export function systemVersionQueryKey(): SystemVersionQueryKey {
   return [SYSTEM_VERSION_QUERY_KEY];
 }
 
-export function localProviderCliStatusQueryKey(
-  daemonPort: number | null,
-): LocalProviderCliStatusQueryKey {
-  return [LOCAL_PROVIDER_CLI_STATUS_QUERY_KEY, daemonPort];
+export function hostProviderCliStatusQueryKey(
+  hostId: string | null,
+): HostProviderCliStatusQueryKey {
+  return [HOST_PROVIDER_CLI_STATUS_QUERY_KEY, hostId];
 }
 
 export function systemUsageLimitsQueryKey(): SystemUsageLimitsQueryKey {
@@ -1004,15 +1070,15 @@ export function systemExecutionOptionsEnvironmentQueryKeyPrefix(
   return [SYSTEM_EXECUTION_OPTIONS_QUERY_KEY, environmentId];
 }
 
-export function localPathExistenceQueryKey(
-  hostId: string,
+export function hostPathExistenceQueryKey(
+  hostId: string | null,
   paths: readonly string[],
-): LocalPathExistenceQueryKey {
-  return [LOCAL_PATH_EXISTENCE_QUERY_KEY, hostId, paths];
+): HostPathExistenceQueryKey {
+  return [HOST_PATH_EXISTENCE_QUERY_KEY, hostId, paths];
 }
 
-export function localPathExistenceQueryKeyPrefix(): LocalPathExistenceQueryKeyPrefix {
-  return [LOCAL_PATH_EXISTENCE_QUERY_KEY];
+export function hostPathExistenceQueryKeyPrefix(): HostPathExistenceQueryKeyPrefix {
+  return [HOST_PATH_EXISTENCE_QUERY_KEY];
 }
 
 export function automationsQueryKey(): AutomationsQueryKey {

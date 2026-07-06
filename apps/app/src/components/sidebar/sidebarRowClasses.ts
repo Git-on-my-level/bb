@@ -65,7 +65,7 @@ export function getSidebarThreadGroupLineLeft(depth: number): number {
 }
 
 export const SIDEBAR_ROW_INTERACTIVE_STATE_CLASS =
-  "text-sidebar-foreground/85 dark:text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
+  "cursor-pointer text-sidebar-foreground/85 dark:text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
 
 // Header rows whose caret (not the row body) is the click target: project and
 // folder rows. Text color only — no row-level hover highlight.
@@ -73,7 +73,10 @@ export const SIDEBAR_ROW_STATIC_STATE_CLASS =
   "text-sidebar-foreground/85 dark:text-sidebar-foreground";
 
 export const SIDEBAR_ROW_SELECTED_STATE_CLASS =
-  "bg-sidebar-border text-sidebar-foreground";
+  "bg-sidebar-border/70 text-sidebar-foreground";
+
+export const SIDEBAR_MORE_ACTION_TRIGGER_CLASS =
+  "relative m-1 h-5 w-5 after:absolute after:left-1/2 after:top-1/2 after:h-7 after:w-7 after:-translate-x-1/2 after:-translate-y-1/2 after:content-[''] max-md:pointer-coarse:m-0 max-md:pointer-coarse:h-9 max-md:pointer-coarse:w-9 max-md:pointer-coarse:after:hidden";
 
 /**
  * Hairline that runs through an expanded project's thread list, sitting

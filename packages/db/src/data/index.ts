@@ -188,6 +188,33 @@ export type {
 } from "./threads.js";
 
 export { getExperiments, setExperiments } from "./experiments.js";
+export {
+  deleteInstalledPlugin,
+  getInstalledPlugin,
+  listInstalledPlugins,
+  setInstalledPluginEnabled,
+  upsertInstalledPlugin,
+  type InstalledPluginRow,
+} from "./plugins.js";
+export {
+  deleteAllPluginSettings,
+  deletePluginKvValue,
+  getPluginKvValue,
+  getPluginSettingsValues,
+  listPluginKvKeys,
+  setPluginKvValue,
+  setPluginSettingsValues,
+} from "./plugin-storage.js";
+export {
+  claimPluginScheduledRun,
+  deletePluginSchedules,
+  listDuePluginSchedules,
+  listPluginSchedules,
+  prunePluginSchedules,
+  recordPluginScheduleResult,
+  upsertPluginSchedule,
+  type PluginScheduleRow,
+} from "./plugin-schedules.js";
 
 export {
   getStoredThemeId,
@@ -262,10 +289,12 @@ export {
   findTimelineSegmentAnchorSequenceAfter,
   getTimelineSegmentAnchorAtSequence,
   listStoredClientTurnRequestIdsInRange,
+  listStoredEventRowsByParentToolCallIds,
   listStoredEventRows,
   listStoredEventRowsInRange,
   listStoredThreadProvisioningRowsByProvisioningId,
   listStoredTimelineWindowEventRows,
+  listStoredToolCallRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
@@ -400,13 +429,10 @@ export type {
 export {
   openSession,
   closeSession,
-  getActiveSession,
-  getActiveSessionById,
   getLatestSessionForHost,
-  getMostRecentlyUpdatedConnectedHostId,
+  getSessionById,
   heartbeatSession,
   listLatestSessionsForHosts,
-  listConnectedHostIds,
 } from "./sessions.js";
 export type {
   GetLatestSessionForHostArgs,
@@ -458,13 +484,11 @@ export {
   pruneClosedSessions,
   pruneDestroyedEnvironments,
   truncateCompletedEventItemOutputs,
-  sweepExpiredLeases,
   sweepManagedEnvironments,
 } from "./sweeps.js";
 export type {
   PruneClosedSessionsArgs,
   PruneClosedSessionsResult,
-  SweepExpiredLeasesResult,
   TruncateCompletedEventItemOutputsArgs,
   TruncateCompletedEventItemOutputsResult,
 } from "./sweeps.js";

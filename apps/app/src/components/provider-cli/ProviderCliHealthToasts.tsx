@@ -9,10 +9,9 @@ import {
   useProviderCliInstallRunner,
 } from "./provider-cli-install";
 import {
-  useLocalProviderCliStatus,
-  useSystemConfig,
+  useHostProviderCliStatus,
 } from "@/hooks/queries/system-queries";
-import { isLoopbackOrigin } from "@/lib/system-config-atoms";
+import { usePrimaryHost } from "@/hooks/queries/host-queries";
 
 const PROVIDER_CLI_TOAST_DISMISSED_STORAGE_KEY_PREFIX =
   "bb:provider-cli-toast:dismissed-v2:";
@@ -69,19 +68,14 @@ function clearDismissedForFingerprint(fingerprint: string): void {
 }
 
 export function ProviderCliHealthToasts() {
-  const systemConfig = useSystemConfig();
-  // Only probe the loopback-bound daemon when the page is itself a loopback
-  // origin; from a remote/Tailscale origin the request is always CORS-blocked.
-  const daemonPort = isLoopbackOrigin()
-    ? (systemConfig.data?.hostDaemonPort ?? null)
-    : null;
-  const providerCliStatus = useLocalProviderCliStatus({
-    daemonPort,
-    enabled: daemonPort !== null,
+  const primaryHostId = usePrimaryHost()?.id ?? null;
+  const providerCliStatus = useHostProviderCliStatus({
+    hostId: primaryHostId,
+    enabled: primaryHostId !== null,
   });
   const refetchProviderCliStatus = providerCliStatus.refetch;
   const { installLogDialog, startInstall } = useProviderCliInstallRunner({
-    daemonPort,
+    hostId: primaryHostId,
     onStatusUpdated: () => {
       void refetchProviderCliStatus();
     },
@@ -147,13 +141,6 @@ export function ProviderCliHealthToasts() {
 
       shownFingerprintsRef.current.add(issue.fingerprint);
       if (hasProviderCliAction(issue)) {
-        const dismissAction =
-          issue.action.kind === "update"
-            ? {
-                label: "Dismiss",
-                onClick: () => dismissIssue(issue),
-              }
-            : undefined;
         appToast.warning(issue.title, {
           id: issue.toastId,
           description: issue.description,
@@ -162,7 +149,10 @@ export function ProviderCliHealthToasts() {
             label: issue.action.label,
             onClick: () => startInstall(issue),
           },
-          ...(dismissAction ? { cancel: dismissAction } : {}),
+          cancel: {
+            label: "Dismiss",
+            onClick: () => dismissIssue(issue),
+          },
         });
       } else {
         appToast.warning(issue.title, {

@@ -314,6 +314,7 @@ describe("consumer-specific config", () => {
     expect(serverConfig.BB_HOST_DAEMON_PORT).toBe(5555);
     expect(serverConfig.databasePath).toBe("/tmp/bb-data/bb.db");
     expect(serverConfig.BB_APP_URL).toBe("");
+    expect(serverConfig.BB_APP_SURFACE).toBe("web");
     expect(serverConfig.BB_APP_VERSION).toBe("0.0.0-dev");
     expect(serverConfig.BB_EXTERNAL_URL).toBe("");
     expect(serverConfig.BB_INFERENCE).toBe("codex/gpt-5.4-mini");
@@ -362,6 +363,26 @@ describe("consumer-specific config", () => {
     });
 
     expect(serverConfig.BB_APP_VERSION).toBe("0.1.2");
+  });
+
+  it("parses the internal app surface marker for server telemetry", () => {
+    const serverConfig = loadServerConfig({
+      env: createServerRuntimeEnv({
+        BB_APP_SURFACE: "desktop",
+        NODE_ENV: "production",
+      }),
+    });
+
+    expect(serverConfig.BB_APP_SURFACE).toBe("desktop");
+
+    expect(() =>
+      loadServerConfig({
+        env: createServerRuntimeEnv({
+          BB_APP_SURFACE: "mobile",
+          NODE_ENV: "production",
+        }),
+      }),
+    ).toThrow("BB_APP_SURFACE must be one of desktop, web");
   });
 
   it("lets tooling read the server port without validating unrelated server env", () => {
@@ -544,14 +565,15 @@ describe("consumer-specific config", () => {
     expect(loggerConfig.BB_LOG_LEVEL).toBe("debug");
   });
 
-  it("requires CLI connection env", () => {
-    expect(() =>
-      loadCliConfig({
-        env: {
-          NODE_ENV: "development",
-        },
-      }),
-    ).toThrow(/BB_SERVER_URL/u);
+  it("defaults CLI connection env to the local app instance", () => {
+    const cliConfig = loadCliConfig({
+      env: {
+        NODE_ENV: "development",
+      },
+    });
+
+    expect(cliConfig.BB_SERVER_URL).toBe("http://127.0.0.1:38886");
+    expect(cliConfig.BB_HOST_DAEMON_PORT).toBe(38887);
   });
 
   it("lets explicit CLI env overrides win over NODE_ENV-selected defaults", () => {

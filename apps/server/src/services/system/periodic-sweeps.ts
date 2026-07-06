@@ -22,7 +22,6 @@ import {
   runIncrementalVacuum,
   shouldCompactDatabase,
   shouldRunIncrementalVacuum,
-  sweepExpiredLeases,
   sweepManagedEnvironments,
   threads,
   truncateCompletedEventItemOutputs,
@@ -41,7 +40,6 @@ import {
   runtimeErrorLogFields,
 } from "../lib/error-log-fields.js";
 import { advanceEnvironmentProvisioning } from "../environments/environment-provisioning-internal.js";
-import { handleExpiredHostSessionLeases } from "../../internal/session-owner-side-effects.js";
 import {
   advanceProjectDeletion,
   listProjectsPendingDeletion,
@@ -53,6 +51,18 @@ import { LIVE_DAEMON_COMMAND_TIMEOUT_MS } from "../hosts/live-command.js";
 import { sweepDueAutomations } from "../scheduling/automation-sweep.js";
 
 export type DatabaseMaintenanceSweepDeps = Pick<AppDeps, "db" | "logger">;
+
+/**
+ * Narrow slice of the plugin service the schedule sweep needs (the plugin
+ * service owns claiming and invocation; this loop just drives it).
+ */
+export interface PluginScheduleSweeper {
+  sweepDueSchedules(now: number): Promise<void>;
+}
+
+export type PeriodicSweepDeps = LoggedPendingInteractionWorkSessionDeps & {
+  pluginSchedules: PluginScheduleSweeper;
+};
 
 const DATABASE_MAINTENANCE_CHECK_INTERVAL_MS = 60 * 60_000;
 // Archive cleanup paths schedule immediate advances; this bounds only fallback
@@ -66,7 +76,6 @@ export type PeriodicSweepJobCategory =
   | "retention"
   | "durable-intent-retry"
   | "orphan-cleanup"
-  | "lifecycle-timeout"
   | "maintenance"
   | "scheduler";
 
@@ -74,10 +83,7 @@ export interface PeriodicSweepJob {
   cadenceMs: number;
   category: PeriodicSweepJobCategory;
   name: string;
-  run(
-    deps: LoggedPendingInteractionWorkSessionDeps,
-    now: number,
-  ): Promise<void> | void;
+  run(deps: PeriodicSweepDeps, now: number): Promise<void> | void;
 }
 
 interface PeriodicSweepJobState {
@@ -125,7 +131,7 @@ function getPeriodicSweepJobState(
 }
 
 async function runPeriodicSweepJob(
-  deps: LoggedPendingInteractionWorkSessionDeps,
+  deps: PeriodicSweepDeps,
   job: PeriodicSweepJob,
   now: number,
 ): Promise<void> {
@@ -161,7 +167,7 @@ async function runPeriodicSweepJob(
 }
 
 export async function runPeriodicSweepJobs(
-  deps: LoggedPendingInteractionWorkSessionDeps,
+  deps: PeriodicSweepDeps,
   jobs: PeriodicSweepJobList,
   now: number,
 ): Promise<void> {
@@ -507,13 +513,6 @@ function runClosedSessionPruneSweep(
   });
 }
 
-function runExpiredLeaseSweep(
-  deps: LoggedPendingInteractionWorkSessionDeps,
-): void {
-  const expiredLeases = sweepExpiredLeases(deps.db, deps.hub);
-  handleExpiredHostSessionLeases(deps, { expiredLeases });
-}
-
 function runDestroyedEnvironmentPruneSweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): void {
@@ -545,12 +544,6 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
     category: "retention",
     name: "closed-session-prune",
     run: runClosedSessionPruneSweep,
-  },
-  {
-    cadenceMs: 0,
-    category: "lifecycle-timeout",
-    name: "expired-host-session-lease",
-    run: runExpiredLeaseSweep,
   },
   {
     cadenceMs: 0,
@@ -595,6 +588,14 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
     run: runDueAutomationSweep,
   },
   {
+    cadenceMs: 0,
+    category: "scheduler",
+    name: "plugin-schedule",
+    // No primary-host gate: plugin schedules run even with no hosts enrolled
+    // (design §4.8) — they are not automations.
+    run: (deps, now) => deps.pluginSchedules.sweepDueSchedules(now),
+  },
+  {
     cadenceMs: DATABASE_MAINTENANCE_CHECK_INTERVAL_MS,
     category: "maintenance",
     name: "database-maintenance",
@@ -610,9 +611,7 @@ export async function runStartupRecoverySweep(
   await evaluateManagedEnvironmentArchiveCleanupCandidates(deps, Date.now());
 }
 
-export async function runPeriodicSweeps(
-  deps: LoggedPendingInteractionWorkSessionDeps,
-): Promise<void> {
+export async function runPeriodicSweeps(deps: PeriodicSweepDeps): Promise<void> {
   const now = Date.now();
   await runPeriodicSweepJobs(deps, PERIODIC_SWEEP_JOBS, now);
 }

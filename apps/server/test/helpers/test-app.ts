@@ -32,6 +32,7 @@ export interface TestAppHarness {
   db: DbConnection;
   deps: ServerAppDeps;
   hub: NotificationHub;
+  pluginService: ReturnType<typeof createApp>["pluginService"];
   cleanup(): Promise<void>;
 }
 
@@ -123,6 +124,7 @@ export async function createTestAppHarness(
     },
   };
   const config: ServerRuntimeConfig = {
+    appSurface: "web",
     appVersion: "0.0.0-test",
     automationsAllowScriptRuns: true,
     builtinSkillsRootPath: join(dataDir, "builtin-skills"),
@@ -131,6 +133,7 @@ export async function createTestAppHarness(
     dataDir,
     featureFlags: defaultFeatureFlags,
     hostDaemonPort: 3001,
+    inheritedSkillsRootPaths: [],
     inferenceModel: "test/mock-model",
     isDevelopment: true,
     openAiApiKey: "test-openai-key",
@@ -180,7 +183,7 @@ export async function createTestAppHarness(
     terminalSessions,
     watchInterests,
   };
-  const { app } = createApp(deps);
+  const { app, pluginService } = createApp(deps);
 
   return {
     app,
@@ -188,6 +191,7 @@ export async function createTestAppHarness(
     db,
     deps,
     hub,
+    pluginService,
     async cleanup(): Promise<void> {
       await rm(dataDir, { recursive: true, force: true });
     },
@@ -226,7 +230,9 @@ export async function startTestServer(
 ): Promise<RunningTestServer> {
   const harness = await createTestAppHarness(overrides);
   let addressInfo: AddressInfo | null = null;
-  const { app, closeWebSockets, injectWebSocket } = createApp(harness.deps);
+  const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
+    harness.deps,
+  );
   const server = serve(
     {
       // The client always connects to 127.0.0.1, so bind the test server to
@@ -252,6 +258,7 @@ export async function startTestServer(
   return {
     ...harness,
     app,
+    pluginService,
     baseUrl: `http://${TEST_SERVER_HOST}:${resolvedAddress.port}`,
     async close(): Promise<void> {
       const closeServer = new Promise<void>((resolve, reject) => {

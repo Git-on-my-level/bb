@@ -8,6 +8,7 @@ import {
   createBrowserFixedPanelTab,
   createHostFilePreviewFixedPanelTab,
   createNewTabFixedPanelTab,
+  createPluginPanelFixedPanelTab,
   createSideChatFixedPanelTab,
   createThreadStorageFilePreviewFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
@@ -16,10 +17,16 @@ import {
   type HostFilePreviewFixedPanelTab,
   type NewTabFixedPanelTab,
   type SideChatFixedPanelTab,
-  type TerminalFixedPanelTab,
   type ThreadStorageFilePreviewFixedPanelTab,
   type WorkspaceFilePreviewFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
+import { usePluginSlots } from "@/lib/plugin-slots";
+import { useFileOpenerPreferenceValue } from "@/lib/file-opener-preference";
+import {
+  createFileOpenerTabForRequest,
+  type FileTabViewerOverride,
+} from "@/components/plugin/file-opener-tabs";
+import type { OpenPluginPanelArgs } from "@/components/plugin/PluginPanelActions";
 import type {
   HostFileTabState,
   ThreadStorageFileTabState,
@@ -47,6 +54,7 @@ import {
   setSecondaryPanelTabsInState,
   updateSecondaryPanelTabInState,
 } from "./secondaryPanelTabState";
+import { pruneTerminalTabsForSessions } from "./terminalPanelTabs";
 
 interface UseThreadFileTabsParams {
   threadId: string | null | undefined;
@@ -54,17 +62,13 @@ interface UseThreadFileTabsParams {
   fileOwnerThreadId?: string | null;
   preserveWorkspaceTabsAcrossContexts?: boolean;
   projectId?: string | null;
+  retainedTerminalId?: string | null;
   storageFiles: readonly ThreadStorageFileListItem[] | undefined;
   terminalSessions: readonly TerminalSession[] | undefined;
 }
 
 interface ThreadStorageFileListItem {
   path: string;
-}
-
-interface PruneTerminalTabsArgs {
-  knownTerminalIds: ReadonlySet<string>;
-  tabs: readonly FixedPanelTab[];
 }
 
 export interface FileSearchWorkspaceSelection {
@@ -133,10 +137,6 @@ type SecondaryPanelTab =
   | BrowserFixedPanelTab
   | NewTabFixedPanelTab;
 
-function isTerminalTab(tab: FixedPanelTab): tab is TerminalFixedPanelTab {
-  return tab.kind === "terminal";
-}
-
 function isSideChatTab(tab: FixedPanelTab): tab is SideChatFixedPanelTab {
   return tab.kind === "side-chat";
 }
@@ -144,16 +144,6 @@ function isSideChatTab(tab: FixedPanelTab): tab is SideChatFixedPanelTab {
 // Every side chat uses a constant tab title; the message it was triggered from
 // is shown inside the panel ("Replying to" bubble), so the tab needn't echo it.
 const SIDE_CHAT_TAB_TITLE = "Side chat";
-
-export function pruneTerminalTabs({
-  knownTerminalIds,
-  tabs,
-}: PruneTerminalTabsArgs): readonly FixedPanelTab[] {
-  const nextTabs = tabs.filter(
-    (tab) => !isTerminalTab(tab) || knownTerminalIds.has(tab.terminalId),
-  );
-  return nextTabs.length === tabs.length ? tabs : nextTabs;
-}
 
 function createStorageTab(
   environmentId: string | null,
@@ -260,6 +250,7 @@ export function useThreadFileTabs({
   fileOwnerThreadId,
   preserveWorkspaceTabsAcrossContexts = false,
   projectId = null,
+  retainedTerminalId = null,
   storageFiles,
   terminalSessions,
 }: UseThreadFileTabsParams) {
@@ -397,15 +388,13 @@ export function useThreadFileTabs({
   useEffect(() => {
     if (!isThreadResolved || terminalSessions === undefined) return;
     updateFixedPanelTabsState((state) => {
-      const knownTerminalIds = new Set(
-        terminalSessions.map((session) => session.id),
-      );
       const pruned = setPrunedSecondaryTabs({
         activeTabId: state.secondary.activeTabId,
         stateTabs: state.secondary.tabs,
-        tabs: pruneTerminalTabs({
-          knownTerminalIds,
+        tabs: pruneTerminalTabsForSessions({
+          retainedTerminalId,
           tabs: state.secondary.tabs,
+          terminalSessions,
         }),
       });
       return setSecondaryPanelTabsInState({
@@ -415,16 +404,43 @@ export function useThreadFileTabs({
         tabs: pruned.tabs,
       });
     });
-  }, [isThreadResolved, terminalSessions, updateFixedPanelTabsState]);
+  }, [
+    isThreadResolved,
+    retainedTerminalId,
+    terminalSessions,
+    updateFixedPanelTabsState,
+  ]);
+
+  const { fileOpeners } = usePluginSlots();
+  const fileOpenerPreference = useFileOpenerPreferenceValue();
 
   const openTab = useCallback(
-    (request: OpenSecondaryPanelTabRequest) => {
-      const tab = createTabForOpenRequest({
+    (
+      request: OpenSecondaryPanelTabRequest,
+      options?: { viewer?: FileTabViewerOverride },
+    ) => {
+      // Default-opener diversion (plugin design §5.2): every file-open flow
+      // funnels through here (links, file search, `bb thread open`), so a
+      // preferred plugin opener applies uniformly. Falls through to the
+      // built-in tab when no opener matches; a link menu's per-open viewer
+      // choice overrides the default in either direction.
+      const openerTab = createFileOpenerTabForRequest({
+        fileOpeners,
+        preference: fileOpenerPreference,
         projectId,
         request,
         resolvedEnvironmentId,
         threadId: resolvedFileOwnerThreadId,
+        ...(options?.viewer !== undefined ? { viewer: options.viewer } : {}),
       });
+      const tab =
+        openerTab ??
+        createTabForOpenRequest({
+          projectId,
+          request,
+          resolvedEnvironmentId,
+          threadId: resolvedFileOwnerThreadId,
+        });
       if (tab === null) return;
 
       if (
@@ -445,6 +461,8 @@ export function useThreadFileTabs({
       });
     },
     [
+      fileOpenerPreference,
+      fileOpeners,
       recordRecentItem,
       projectId,
       resolvedEnvironmentId,
@@ -467,6 +485,37 @@ export function useThreadFileTabs({
       updateFixedPanelTabsState((state) =>
         closeSecondaryPanelTabInState(state, tabId),
       );
+    },
+    [updateFixedPanelTabsState],
+  );
+
+  // Opens (or focuses) a plugin panel tab from a `threadPanelAction`. Params
+  // are part of the tab identity: identical params focus the existing tab
+  // (refreshing its title), different params open a sibling tab. Launched
+  // from the new-tab page, so the transient new-tab is replaced like the
+  // file/browser launchers do.
+  const openPluginPanel = useCallback(
+    ({ pluginId, actionId, title, paramsJson }: OpenPluginPanelArgs) => {
+      const tab = createPluginPanelFixedPanelTab({
+        actionId,
+        paramsJson,
+        pluginId,
+        title,
+      });
+      updateFixedPanelTabsState((state) => {
+        const existing = findSecondaryPanelTab(state.secondary.tabs, tab.id);
+        if (existing !== null && existing.kind === "plugin-panel") {
+          const withTitle =
+            existing.title === title
+              ? state
+              : updateSecondaryPanelTabInState({
+                  state,
+                  tab: { ...existing, title },
+                });
+          return activateSecondaryPanelTabInState(withTitle, tab.id);
+        }
+        return replaceNewTabWithSecondaryPanelTabInState({ state, tab });
+      });
     },
     [updateFixedPanelTabsState],
   );
@@ -669,6 +718,8 @@ export function useThreadFileTabs({
   const activeNewTab = activeTab?.kind === "new-tab" ? activeTab : null;
   const activeSideChatTab =
     activeTab?.kind === "side-chat" ? activeTab : null;
+  const activePluginPanelTab =
+    activeTab?.kind === "plugin-panel" ? activeTab : null;
 
   return {
     activateTab,
@@ -688,6 +739,7 @@ export function useThreadFileTabs({
     activeWorkspaceFileProjectId: activeWorkspaceFileTab?.projectId ?? null,
     activeWorkspaceFileSource: activeWorkspaceFileTab?.source ?? null,
     activeWorkspaceFileStatusLabel: activeWorkspaceFileTab?.statusLabel ?? null,
+    activePluginPanelTab,
     activeSideChatTabId: activeSideChatTab?.id ?? null,
     activateSideChatTab,
     browserTabs,
@@ -695,6 +747,7 @@ export function useThreadFileTabs({
     closeSideChatTab,
     closeTab,
     isNewTabActive: activeNewTab !== null,
+    openPluginPanel,
     openSideChat,
     openExistingSideChatTab,
     openTab,

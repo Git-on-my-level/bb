@@ -10,7 +10,7 @@ const mockActions = vi.hoisted(() => ({
   archiveThreadAndChildren: vi.fn(),
   requestRename: vi.fn(),
   requestDelete: vi.fn(),
-  sendToPopout: null,
+  sendToPopout: null as ((thread: Thread) => void) | null,
   togglePin: vi.fn(),
   toggleRead: vi.fn(),
   unarchiveThread: vi.fn(),
@@ -33,6 +33,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     parentThreadId: null,
     sourceThreadId: null,
     originKind: null,
+    originPluginId: null,
     childOrigin: null,
     archivedAt: null,
     pinnedAt: null,
@@ -45,16 +46,24 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
-async function renderOpenMenu(thread: Thread) {
+async function renderOpenMenu(
+  thread: Thread,
+  { isCompactViewport = true }: { isCompactViewport?: boolean } = {},
+) {
   const onOpenChange = vi.fn();
   render(
-    <CompactViewportOverrideProvider isCompactViewport={true}>
+    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
       <ThreadActionsMenu thread={thread} onOpenChange={onOpenChange} />
     </CompactViewportOverrideProvider>,
   );
 
-  fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
-  await screen.findByRole("menuitem", { name: /Mark as / });
+  const trigger = screen.getByRole("button", { name: "Thread actions" });
+  if (isCompactViewport) {
+    fireEvent.click(trigger);
+  } else {
+    fireEvent.pointerDown(trigger, { button: 0 });
+  }
+  await screen.findByRole("menuitem", { name: /Mark / });
   expect(onOpenChange).toHaveBeenLastCalledWith(true);
   return onOpenChange;
 }
@@ -64,20 +73,33 @@ function expectMenuItemIcon(label: string, iconName: string) {
   expect(menuItem.querySelector(`[data-icon="${iconName}"]`)).not.toBeNull();
 }
 
+function getMenuRoleSequence(): string[] {
+  return Array.from(
+    screen
+      .getByRole("menu")
+      .querySelectorAll('[role="menuitem"], [role="separator"]'),
+  ).map((element) =>
+    element.getAttribute("role") === "separator"
+      ? "separator"
+      : (element.textContent ?? "").trim(),
+  );
+}
+
 describe("ThreadActionsMenu", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    mockActions.sendToPopout = null;
   });
 
   it.each([
     {
-      label: "Mark as read",
+      label: "Mark read",
       thread: makeThread(),
       action: mockActions.toggleRead,
     },
     {
-      label: "Mark as unread",
+      label: "Mark unread",
       thread: makeThread({ lastReadAt: 100, latestAttentionAt: 50 }),
       action: mockActions.toggleRead,
     },
@@ -113,10 +135,38 @@ describe("ThreadActionsMenu", () => {
   it("renders icons for thread action menu items", async () => {
     await renderOpenMenu(makeThread());
 
-    expectMenuItemIcon("Mark as read", "MailOpen");
+    expectMenuItemIcon("Mark read", "MailOpen");
     expectMenuItemIcon("Pin", "Pin");
     expectMenuItemIcon("Rename", "Edit");
     expectMenuItemIcon("Archive", "Archive");
     expectMenuItemIcon("Delete", "Trash2");
+  });
+
+  it("omits dividers when rendering as a compact drawer", async () => {
+    await renderOpenMenu(makeThread(), { isCompactViewport: true });
+
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+
+  it("renders one divider before lifecycle actions when the popout action is unavailable", async () => {
+    await renderOpenMenu(makeThread(), { isCompactViewport: false });
+
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+    expect(getMenuRoleSequence()).toEqual([
+      "Mark read",
+      "Pin",
+      "Rename",
+      "separator",
+      "Archive",
+      "Delete",
+    ]);
+  });
+
+  it("renders both dividers when the popout action is available", async () => {
+    mockActions.sendToPopout = vi.fn();
+
+    await renderOpenMenu(makeThread(), { isCompactViewport: false });
+
+    expect(screen.getAllByRole("separator")).toHaveLength(2);
   });
 });

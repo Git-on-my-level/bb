@@ -40,6 +40,7 @@ import {
   buildExecutionOptions,
   prepareTurnSubmitCommandPayload,
 } from "./thread-commands.js";
+import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js";
 import { appendClientTurnEventInTransaction } from "./thread-events.js";
 import { getLastProviderThreadId } from "./thread-events.js";
 import { ensureThreadCanStartRequest } from "./thread-lifecycle.js";
@@ -108,6 +109,7 @@ interface FormatQueuedMessageInputForSenderArgs {
 
 const STALE_QUEUED_MESSAGE_CLAIM_MS = 5 * 60 * 1000;
 const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
+const activeQueuedMessageClaimTokens = new Set<string>();
 
 function sendQueuedMessagePayload(
   queuedMessage: ThreadQueuedMessage,
@@ -162,6 +164,22 @@ function releaseQueuedMessageClaims(
       id: queuedMessage.id,
       claimToken: queuedMessage.claimToken,
     });
+  }
+}
+
+async function withActiveQueuedMessageClaims<T>(
+  queuedMessages: readonly ClaimedQueuedMessage[],
+  task: () => Promise<T>,
+): Promise<T> {
+  for (const queuedMessage of queuedMessages) {
+    activeQueuedMessageClaimTokens.add(queuedMessage.claimToken);
+  }
+  try {
+    return await task();
+  } finally {
+    for (const queuedMessage of queuedMessages) {
+      activeQueuedMessageClaimTokens.delete(queuedMessage.claimToken);
+    }
   }
 }
 
@@ -258,13 +276,29 @@ async function sendClaimedQueuedMessageForIdleProviderThread(
   ensureThreadCanStartRequest(thread);
 
   const senderThreadId = args.queuedMessages[0]!.senderThreadId;
-  const inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
+  let inputGroups = args.queuedMessages.map((claimedQueuedMessage) =>
     formatQueuedMessageInputForSender({
       input: toThreadQueuedMessage(claimedQueuedMessage).content,
       senderThreadId: claimedQueuedMessage.senderThreadId,
     }),
   );
-  const input = groupedInputForRuntime(inputGroups);
+  let input = groupedInputForRuntime(inputGroups);
+  // Plugin mentions resolve once at send time (plugin design §4.9), exactly
+  // like the direct-send path in sendThreadMessage: this fast path dispatches
+  // straight to the daemon, so it must append the same agent-only context
+  // inputs itself. A resolve failure throws before the claim is consumed, so
+  // the message stays queued instead of silently losing its context.
+  const pluginMentionContext = await resolvePluginMentionContextInputs(input);
+  if (pluginMentionContext.length > 0) {
+    input = [...input, ...pluginMentionContext];
+    // Keep the grouped view aligned with the flat runtime input: the
+    // context rides the final group so a grouped send carries it too.
+    const lastGroup = inputGroups[inputGroups.length - 1]!;
+    inputGroups = [
+      ...inputGroups.slice(0, -1),
+      [...lastGroup, ...pluginMentionContext],
+    ];
+  }
   const payload = sendQueuedMessagePayload(
     { ...queuedMessage, content: input },
     args.mode,
@@ -425,11 +459,13 @@ export async function sendQueuedMessage(
 ): Promise<ThreadQueuedMessage> {
   const queuedMessages = claimQueuedThreadMessageForSend(deps, args);
   try {
-    return await sendClaimedQueuedMessage(deps, {
-      mode: args.mode,
-      queuedMessages,
-      threadId: args.threadId,
-    });
+    return await withActiveQueuedMessageClaims(queuedMessages, () =>
+      sendClaimedQueuedMessage(deps, {
+        mode: args.mode,
+        queuedMessages,
+        threadId: args.threadId,
+      }),
+    );
   } catch (error) {
     releaseQueuedMessageClaims(deps, queuedMessages);
     throw error;
@@ -460,11 +496,13 @@ export async function sendNextQueuedMessageIfPresent(
   }
 
   try {
-    await sendClaimedQueuedMessageForThread(deps, {
-      mode: "auto",
-      queuedMessages: nextQueuedMessages,
-      thread,
-    });
+    await withActiveQueuedMessageClaims(nextQueuedMessages, () =>
+      sendClaimedQueuedMessageForThread(deps, {
+        mode: "auto",
+        queuedMessages: nextQueuedMessages,
+        thread,
+      }),
+    );
   } catch (error) {
     releaseQueuedMessageClaims(deps, nextQueuedMessages);
     if (isQueuedMessageClaimLostError(error)) {
@@ -532,6 +570,7 @@ export async function runQueuedMessageAutoSendSweep(
 ): Promise<void> {
   releaseStaleQueuedMessageClaims(deps.db, deps.hub, {
     claimedBefore: Date.now() - STALE_QUEUED_MESSAGE_CLAIM_MS,
+    protectedClaimTokens: [...activeQueuedMessageClaimTokens],
   });
 
   for (const candidate of listIdleThreadsWithQueuedMessages(deps.db)) {

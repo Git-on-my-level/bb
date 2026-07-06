@@ -1,6 +1,7 @@
 import {
   memo,
   useLayoutEffect,
+  useContext,
   useMemo,
   useRef,
   useState,
@@ -10,16 +11,25 @@ import {
   type SetStateAction,
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import type {
   Components,
   ExtraProps,
   Options as ReactMarkdownOptions,
   UrlTransform,
 } from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import { ImageLightbox } from "./image-lightbox.js";
 import { CopyButton } from "./copy-button.js";
 import { Icon } from "./icon.js";
@@ -28,6 +38,8 @@ import {
   getMarkdownCodeLanguage,
   isMarkdownCodeBlock,
 } from "./markdown-code-block.js";
+import { highlightMarkdownCode } from "./markdown-code-highlight.js";
+import "./markdown-code-highlight.css";
 import { normalizeLocalFileMarkdownLinks } from "./markdown-local-file-link-normalize.js";
 import {
   buildLocalFileAnchorHref,
@@ -36,9 +48,10 @@ import {
   type MarkdownAbsoluteLocalFileLinkRouting,
   type MarkdownRelativeLocalFileLinkRouting,
 } from "./markdown-local-file-link.js";
-import type {
-  MarkdownLinkRouting,
-  MarkdownLocalFileLinkRouting,
+import {
+  MarkdownLocalFileOpenWithContext,
+  type MarkdownLinkRouting,
+  type MarkdownLocalFileLinkRouting,
 } from "./markdown-link-routing.js";
 import {
   buildThreadMentionComponent,
@@ -217,12 +230,25 @@ const MARKDOWN_TABLE_BREAKOUT_WIDTH = "max(100%, min(1100px, 100cqw - 2rem))";
 const MARKDOWN_CONTENT_WIDTH_VARIABLE = "--md-content-w";
 const MARKDOWN_SOURCE_COLOR_SCHEME_MEDIA_PATTERN =
   /^\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)$/iu;
-// Security-critical order: raw HTML must become nodes before sanitization can
-// strip unsafe elements, attributes, and URLs.
+// `remark-math` emits math as `<code class="language-math">` (inline) and
+// `<pre><code class="language-math">` (display) holding the raw TeX, and
+// `rehype-katex` renders any element carrying that class. The default sanitize
+// schema already keeps `language-*` classes on `<code>`, so the wrappers survive
+// sanitization untouched — and `rehype-katex` runs LAST, after sanitize, so KaTeX
+// (which uses `trust: false` and self-escapes its TeX input) emits its rendered
+// output without it being re-sanitized.
+//
+// Security-critical order: raw HTML must become nodes (rehypeRaw) before
+// sanitization can strip unsafe elements, attributes, and URLs.
 const MARKDOWN_HTML_REHYPE_PLUGINS: MarkdownRehypePlugins = [
   rehypeRaw,
   rehypeSanitize,
+  rehypeKatex,
 ];
+
+// No raw HTML means nothing untrusted to sanitize, so KaTeX renders straight
+// from the `remark-math` wrappers.
+const MARKDOWN_MATH_REHYPE_PLUGINS: MarkdownRehypePlugins = [rehypeKatex];
 
 function areMarkdownAbsoluteLocalFileLinkRoutingsEqual({
   next,
@@ -455,6 +481,11 @@ function MarkdownAnchor({
         })
       : null;
   const anchorHref = buildLocalFileAnchorHref(localFileLink, rewrittenHref);
+  const getOpenWithItems = useContext(MarkdownLocalFileOpenWithContext);
+  const openWithItems =
+    localFileLink !== null && getOpenWithItems !== null
+      ? getOpenWithItems(localFileLink)
+      : null;
   const handleAnchorClick = (event: MarkdownAnchorEvent) => {
     if (localFileLink && onOpenLocalFileLink) {
       if (onOpenLocalFileLink(localFileLink)) {
@@ -480,7 +511,7 @@ function MarkdownAnchor({
     }
   };
 
-  return (
+  const anchor = (
     <RouteAnchor
       {...anchorProps}
       href={anchorHref}
@@ -501,6 +532,23 @@ function MarkdownAnchor({
       ) : null}
     </RouteAnchor>
   );
+  if (openWithItems === null || openWithItems.length === 0) {
+    return anchor;
+  }
+  // Local file links with viewer choices get a right-click "Open with" menu
+  // (per-open override of the extension's default opener).
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{anchor}</ContextMenuTrigger>
+      <ContextMenuContent>
+        {openWithItems.map((item) => (
+          <ContextMenuItem key={item.id} onSelect={item.onSelect}>
+            {item.label}
+          </ContextMenuItem>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }
 
 function MarkdownCode({
@@ -515,6 +563,16 @@ function MarkdownCode({
   const codeText = String(children ?? "").replace(/\n$/, "");
   const language = getMarkdownCodeLanguage({ className: codeClassName });
   const isBlock = isMarkdownCodeBlock({ codeText, language });
+  const [softWrap, setSoftWrap] = useState(false);
+  // Highlight only fenced blocks (mermaid renders as a diagram, inline code stays
+  // plain). The HTML is escaped by sugar-high, so dangerouslySetInnerHTML is safe.
+  const highlightedHtml = useMemo(
+    () =>
+      isBlock && language !== "mermaid"
+        ? highlightMarkdownCode({ code: codeText, language })
+        : null,
+    [isBlock, language, codeText],
+  );
   if (isBlock) {
     if (language === "mermaid") {
       return (
@@ -531,18 +589,43 @@ function MarkdownCode({
           <span className="font-mono text-xs uppercase text-muted-foreground">
             {language ?? ""}
           </span>
-          <CopyButton text={codeText} label="Copy code" />
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              aria-pressed={softWrap}
+              aria-label={softWrap ? "Disable line wrap" : "Wrap long lines"}
+              onClick={() => {
+                setSoftWrap((value) => !value);
+              }}
+              className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+            >
+              <Icon name="TextWrap" className="size-3" />
+            </button>
+            <CopyButton text={codeText} label="Copy code" />
+          </div>
         </div>
-        <pre className="overflow-x-auto px-3 pb-3 pt-1">
-          <code
-            className={cn(
-              "font-mono text-xs",
-              language ? `language-${language}` : "",
-            )}
-            {...props}
-          >
-            {codeText}
-          </code>
+        <pre
+          className={cn(
+            "bb-code-highlight px-3 pb-3 pt-1",
+            softWrap
+              ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
+              : "overflow-x-auto",
+          )}
+        >
+          {highlightedHtml === null ? (
+            <code className="font-mono text-xs" {...props}>
+              {codeText}
+            </code>
+          ) : (
+            <code
+              className={cn(
+                "font-mono text-xs",
+                language ? `language-${language}` : "",
+              )}
+              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              {...props}
+            />
+          )}
         </pre>
       </div>
     );
@@ -1139,6 +1222,11 @@ function MarkdownPreviewComponent({
   const remarkPlugins = useMemo(
     () => [
       remarkGfm,
+      // `remark-math` with single-dollar math left ON (the default), matching
+      // GitHub: `$x$` is inline and `$$x$$` is block. The known trade-off is that
+      // a line with two unescaped `$` (e.g. "$5 to $10", "$HOME and $PATH") parses
+      // the span between them as math; authors escape a literal dollar with `\$`.
+      remarkMath,
       ...(threadMentions !== undefined || promptMentions !== undefined
         ? [remarkBreaks]
         : []),
@@ -1171,7 +1259,11 @@ function MarkdownPreviewComponent({
           <MarkdownFrontmatter source={frontmatter} />
         ) : null}
         <ReactMarkdown
-          rehypePlugins={allowHtml ? MARKDOWN_HTML_REHYPE_PLUGINS : undefined}
+          rehypePlugins={
+            allowHtml
+              ? MARKDOWN_HTML_REHYPE_PLUGINS
+              : MARKDOWN_MATH_REHYPE_PLUGINS
+          }
           remarkPlugins={remarkPlugins}
           components={markdownComponents}
           urlTransform={resolvedUrlTransform}

@@ -19,7 +19,6 @@ const childActivity = (
   overrides: Partial<CollapsedChildActivity> = {},
 ): CollapsedChildActivity => ({ ...NO_COLLAPSED_CHILD_ACTIVITY, ...overrides });
 
-const THREAD_SUCCESS_CHECK_DELAY_MS = 1200;
 const UNREAD_DONE_SETTLED_DOT_MS = 650;
 const UNREAD_DONE_WORKING_MS = 650;
 
@@ -68,9 +67,7 @@ function UnreadDoneThreadRowCycle() {
   useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setIsUnreadDone((current) => !current),
-      isUnreadDone
-        ? THREAD_SUCCESS_CHECK_DELAY_MS + UNREAD_DONE_SETTLED_DOT_MS
-        : UNREAD_DONE_WORKING_MS,
+      isUnreadDone ? UNREAD_DONE_SETTLED_DOT_MS : UNREAD_DONE_WORKING_MS,
     );
     return () => window.clearTimeout(timeoutId);
   }, [isUnreadDone]);
@@ -94,6 +91,41 @@ function UnreadDoneThreadRowCycle() {
               },
             })
       }
+      isActive={false}
+      options={defaultOption}
+    />
+  );
+}
+
+function WorkflowActiveThreadRow() {
+  return (
+    <StoryThreadRow
+      projectId="proj_demo"
+      thread={makeThread({
+        title: "Background workflow audit",
+        titleFallback: "Background workflow audit",
+        activity: { activeWorkflowCount: 1 },
+      })}
+      isActive={false}
+      options={defaultOption}
+    />
+  );
+}
+
+function WorkflowAndRuntimeActiveThreadRow() {
+  return (
+    <StoryThreadRow
+      projectId="proj_demo"
+      thread={makeThread({
+        title: "Workflow and foreground turn",
+        titleFallback: "Workflow and foreground turn",
+        status: "active",
+        runtime: {
+          displayStatus: "active",
+          hostReconnectGraceExpiresAt: null,
+        },
+        activity: { activeWorkflowCount: 1 },
+      })}
       isActive={false}
       options={defaultOption}
     />
@@ -192,7 +224,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="active"
-        hint="selected thread shows the sidebar-accent background"
+        hint="selected thread shows the lighter sidebar selection background"
       >
         <SidebarStage>
           <StoryThreadRow
@@ -223,6 +255,22 @@ export function Overview() {
         </SidebarStage>
       </StoryRow>
       <StoryRow
+        label="active workflow"
+        hint="runtime is idle, background workflow is active - far-right reserved slot shows the animated workflow glyph"
+      >
+        <SidebarStage>
+          <WorkflowActiveThreadRow />
+        </SidebarStage>
+      </StoryRow>
+      <StoryRow
+        label="active workflow + runtime"
+        hint="workflow activity wins over the generic runtime spinner so the sidebar matches the workflow banner"
+      >
+        <SidebarStage>
+          <WorkflowAndRuntimeActiveThreadRow />
+        </SidebarStage>
+      </StoryRow>
+      <StoryRow
         label="pending interaction"
         hint="needs user input - far-right reserved slot shows the grey question icon"
       >
@@ -244,7 +292,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="unread done"
-        hint="live completion transition: working spinner, CircleCheck for 1200ms, then the settled done dot"
+        hint="live completion transition: working spinner, then the settled done dot"
       >
         <SidebarStage>
           <UnreadDoneThreadRowCycle />
@@ -517,6 +565,29 @@ export function Overview() {
             isActive={false}
             options={childOption}
           />
+        </SidebarStage>
+      </StoryRow>
+    </StoryCard>
+  );
+}
+
+export function ActiveWorkflow() {
+  return (
+    <StoryCard>
+      <StoryRow
+        label="active workflow"
+        hint="workflow-only activity uses the working color and SVG shimmer"
+      >
+        <SidebarStage>
+          <WorkflowActiveThreadRow />
+        </SidebarStage>
+      </StoryRow>
+      <StoryRow
+        label="active workflow + runtime"
+        hint="the workflow glyph still shows when the foreground runtime is active"
+      >
+        <SidebarStage>
+          <WorkflowAndRuntimeActiveThreadRow />
         </SidebarStage>
       </StoryRow>
     </StoryCard>
